@@ -136,9 +136,15 @@ public:
     ssize_t receive_from(mutable_buffer buf, endpoint& from) {
         struct sockaddr_in from_addr;
         socklen_t from_len = sizeof(from_addr);
+#ifdef ASYNC_NET_WINDOWS
+        ssize_t n = ::recvfrom(fd_, static_cast<char*>(buf.data()), static_cast<int>(buf.size()), 0,
+                               reinterpret_cast<struct sockaddr*>(&from_addr),
+                               reinterpret_cast<int*>(&from_len));
+#else
         ssize_t n = ::recvfrom(fd_, buf.data(), buf.size(), 0,
                                reinterpret_cast<struct sockaddr*>(&from_addr),
                                &from_len);
+#endif
         if (n >= 0) {
             from = endpoint(from_addr);
         }
@@ -147,8 +153,13 @@ public:
 
     // Synchronous send (for simple cases)
     ssize_t send_to(const_buffer buf, const endpoint& to) {
+#ifdef ASYNC_NET_WINDOWS
+        return ::sendto(fd_, static_cast<const char*>(buf.data()), static_cast<int>(buf.size()), 0,
+                       to.sockaddr_ptr(), static_cast<int>(to.size()));
+#else
         return ::sendto(fd_, buf.data(), buf.size(), 0,
                        to.sockaddr_ptr(), to.size());
+#endif
     }
 };
 

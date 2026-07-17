@@ -8,6 +8,7 @@
 #include <sys/socket.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <poll.h>
 #include <cstring>
 #include <stdexcept>
 #include <algorithm>
@@ -461,6 +462,44 @@ void IoUringBackend::async_sendto(socket_t fd, const void* buf, size_t len, cons
     sqe->addr = reinterpret_cast<__u64>(&op.msg);
     sqe->off = 0;
     sqe->msg_flags = MSG_NOSIGNAL;
+    sqe->user_data = reinterpret_cast<__u64>(ctx.get());
+}
+
+void IoUringBackend::async_wait_readable(socket_t fd, std::shared_ptr<OperationContext> ctx) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    ctx->set_type(OpType::WaitReadable);
+    read_ops_[fd] = PendingOp{OpType::WaitReadable, ctx, nullptr, {}, 0};
+
+    struct io_uring_sqe* sqe = get_sqe();
+    if (!sqe) {
+        ctx->complete(-1, EBUSY);
+        read_ops_.erase(fd);
+        return;
+    }
+
+    sqe->opcode = IORING_OP_POLL_ADD;
+    sqe->fd = fd;
+    sqe->poll32_events = POLLIN;
+    sqe->user_data = reinterpret_cast<__u64>(ctx.get());
+}
+
+void IoUringBackend::async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    ctx->set_type(OpType::WaitWritable);
+    write_ops_[fd] = PendingOp{OpType::WaitWritable, ctx, nullptr, {}, 0};
+
+    struct io_uring_sqe* sqe = get_sqe();
+    if (!sqe) {
+        ctx->complete(-1, EBUSY);
+        write_ops_.erase(fd);
+        return;
+    }
+
+    sqe->opcode = IORING_OP_POLL_ADD;
+    sqe->fd = fd;
+    sqe->poll32_events = POLLOUT;
     sqe->user_data = reinterpret_cast<__u64>(ctx.get());
 }
 

@@ -5,11 +5,34 @@
 #include "iocp_backend.hpp"
 #include <stdexcept>
 #include <cstring>
-
-#pragma comment(lib, "ws2_32.lib")
-#pragma comment(lib, "mswsock.lib")
+#include <algorithm>
+#include <mswsock.h>
 
 namespace async_net {
+
+// Helper: load ConnectEx function pointer
+static LPFN_CONNECTEX load_connectex(SOCKET fd) {
+    LPFN_CONNECTEX fn = nullptr;
+    GUID guid = WSAID_CONNECTEX;
+    DWORD bytes = 0;
+    if (WSAIoctl(fd, SIO_GET_EXTENSION_FUNCTION_POINTER,
+                 &guid, sizeof(guid), &fn, sizeof(fn), &bytes, nullptr, nullptr) == SOCKET_ERROR) {
+        return nullptr;
+    }
+    return fn;
+}
+
+// Helper: load AcceptEx function pointer
+static LPFN_ACCEPTEX load_acceptex(SOCKET fd) {
+    LPFN_ACCEPTEX fn = nullptr;
+    GUID guid = WSAID_ACCEPTEX;
+    DWORD bytes = 0;
+    if (WSAIoctl(fd, SIO_GET_EXTENSION_FUNCTION_POINTER,
+                 &guid, sizeof(guid), &fn, sizeof(fn), &bytes, nullptr, nullptr) == SOCKET_ERROR) {
+        return nullptr;
+    }
+    return fn;
+}
 
 IocpBackend::IocpBackend() {
     iocp_handle_ = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 0);
@@ -111,13 +134,21 @@ void IocpBackend::async_accept(socket_t listen_fd, socket_t* out_fd, std::shared
         return;
     }
 
+    // Load AcceptEx dynamically (portable across MSVC/MinGW)
+    auto pfn_acceptex = load_acceptex(listen_fd);
+    if (!pfn_acceptex) {
+        closesocket(accept_fd);
+        op->ctx->complete(-1, WSAGetLastError());
+        return;
+    }
+
     // AcceptEx requires extra space for addresses
     char buf[(sizeof(struct sockaddr_in) + 16) * 2];
     DWORD bytes_received = 0;
-    BOOL ret = AcceptEx(listen_fd, accept_fd, buf, 0,
-                        sizeof(struct sockaddr_in) + 16,
-                        sizeof(struct sockaddr_in) + 16,
-                        &bytes_received, &op->overlapped);
+    BOOL ret = pfn_acceptex(listen_fd, accept_fd, buf, 0,
+                            sizeof(struct sockaddr_in) + 16,
+                            sizeof(struct sockaddr_in) + 16,
+                            &bytes_received, &op->overlapped);
 
     if (ret == FALSE && WSAGetLastError() != ERROR_IO_PENDING) {
         closesocket(accept_fd);
@@ -148,13 +179,107 @@ void IocpBackend::async_connect(socket_t fd, const struct sockaddr* addr, sockle
         return;
     }
 
-    BOOL ret = ConnectEx(fd, addr, addrlen, nullptr, 0, nullptr, &op->overlapped);
+    // Load ConnectEx dynamically (portable across MSVC/MinGW)
+    auto pfn_connectex = load_connectex(fd);
+    if (!pfn_connectex) {
+        op->ctx->complete(-1, WSAGetLastError());
+        return;
+    }
+
+    BOOL ret = pfn_connectex(fd, addr, addrlen, nullptr, 0, nullptr, &op->overlapped);
     if (ret == FALSE && WSAGetLastError() != ERROR_IO_PENDING) {
         op->ctx->complete(-1, WSAGetLastError());
         return;
     }
 
     pending_ops_[fd].push_back(std::move(op));
+}
+
+void IocpBackend::async_recvfrom(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    auto op = std::make_unique<OverlappedOp>();
+    op->type = OpType::RecvFrom;
+    op->buf = buf;
+    op->len = len;
+    op->ctx = ctx;
+    op->fd = fd;
+    op->dest_addr_len = sizeof(op->dest_addr);
+    op->wsa_buf.buf = static_cast<char*>(buf);
+    op->wsa_buf.len = static_cast<ULONG>(len);
+
+    DWORD flags = 0;
+    DWORD bytes_received = 0;
+    int ret = WSARecvFrom(fd, &op->wsa_buf, 1, &bytes_received, &flags,
+                          reinterpret_cast<struct sockaddr*>(&op->dest_addr),
+                          reinterpret_cast<LPINT>(&op->dest_addr_len),
+                          &op->overlapped, nullptr);
+    if (ret == SOCKET_ERROR && WSAGetLastError() != WSA_IO_PENDING) {
+        op->ctx->complete(-1, WSAGetLastError());
+        return;
+    }
+
+    pending_ops_[fd].push_back(std::move(op));
+}
+
+void IocpBackend::async_sendto(socket_t fd, const void* buf, size_t len, const struct sockaddr* to, socklen_t tolen, std::shared_ptr<OperationContext> ctx) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    auto op = std::make_unique<OverlappedOp>();
+    op->type = OpType::SendTo;
+    op->buf = const_cast<void*>(buf);
+    op->len = len;
+    op->ctx = ctx;
+    op->fd = fd;
+    memcpy(&op->dest_addr, to, tolen);
+    op->dest_addr_len = tolen;
+    op->wsa_buf.buf = const_cast<char*>(static_cast<const char*>(buf));
+    op->wsa_buf.len = static_cast<ULONG>(len);
+
+    DWORD bytes_sent = 0;
+    int ret = WSASendTo(fd, &op->wsa_buf, 1, &bytes_sent, 0,
+                        reinterpret_cast<const struct sockaddr*>(&op->dest_addr),
+                        op->dest_addr_len,
+                        &op->overlapped, nullptr);
+    if (ret == SOCKET_ERROR && WSAGetLastError() != WSA_IO_PENDING) {
+        op->ctx->complete(-1, WSAGetLastError());
+        return;
+    }
+
+    pending_ops_[fd].push_back(std::move(op));
+}
+
+void IocpBackend::async_wait_readable(socket_t fd, std::shared_ptr<OperationContext> ctx) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Use zero-byte overlapped WSARecv with MSG_PEEK to detect readability
+    auto op = std::make_unique<OverlappedOp>();
+    op->type = OpType::WaitReadable;
+    op->ctx = ctx;
+    op->fd = fd;
+    op->buf = nullptr;
+    op->len = 0;
+    op->wsa_buf.buf = nullptr;
+    op->wsa_buf.len = 0;
+
+    DWORD flags = MSG_PEEK;
+    DWORD bytes_recvd = 0;
+    int ret = WSARecv(fd, &op->wsa_buf, 1, &bytes_recvd, &flags,
+                      &op->overlapped, nullptr);
+    if (ret == SOCKET_ERROR && WSAGetLastError() != WSA_IO_PENDING) {
+        // Immediate error — complete with failure
+        op->ctx->complete(-1, WSAGetLastError());
+        return;
+    }
+
+    pending_ops_[fd].push_back(std::move(op));
+}
+
+void IocpBackend::async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) {
+    // For IOCP, complete immediately.
+    // Sockets are almost always writable; if SSL_write returns WANT_WRITE again,
+    // the coroutine will re-wait and retry.
+    ctx->complete(0, 0);
 }
 
 void IocpBackend::poll(int timeout_ms) {
@@ -178,41 +303,54 @@ void IocpBackend::poll(int timeout_ms) {
     OverlappedOp* op = nullptr;
     socket_t fd = static_cast<socket_t>(completion_key);
 
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<OperationContext*> to_resume;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
 
-    auto it = pending_ops_.find(fd);
-    if (it != pending_ops_.end()) {
-        for (auto& pending : it->second) {
-            if (&pending->overlapped == overlapped) {
-                op = pending.get();
-                break;
+        auto it = pending_ops_.find(fd);
+        if (it != pending_ops_.end()) {
+            for (auto& pending : it->second) {
+                if (&pending->overlapped == overlapped) {
+                    op = pending.get();
+                    break;
+                }
             }
+        }
+
+        if (op == nullptr) {
+            return;
+        }
+
+        DWORD error = ret ? NO_ERROR : GetLastError();
+
+        if (op->type == OpType::Accept && error == NO_ERROR) {
+            // Update the accept context
+            setsockopt(*op->out_fd, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT,
+                       reinterpret_cast<const char*>(&fd), sizeof(fd));
+        } else if (op->type == OpType::Connect && error == NO_ERROR) {
+            // Update the connect context
+            setsockopt(op->fd, SOL_SOCKET, SO_UPDATE_CONNECT_CONTEXT, nullptr, 0);
+        } else if (op->type == OpType::RecvFrom && error == NO_ERROR) {
+            // Copy sender address to context
+            memcpy(&op->ctx->from_addr_, &op->dest_addr, op->dest_addr_len);
+            op->ctx->from_len_ = op->dest_addr_len;
+        }
+
+        op->ctx->complete(error == NO_ERROR ? static_cast<ssize_t>(bytes_transferred) : -1, error);
+        to_resume.push_back(op->ctx.get());
+
+        // Remove the completed operation
+        if (it != pending_ops_.end()) {
+            auto& ops = it->second;
+            ops.erase(std::remove_if(ops.begin(), ops.end(),
+                [op](const std::unique_ptr<OverlappedOp>& p) { return p.get() == op; }),
+                ops.end());
         }
     }
 
-    if (op == nullptr) {
-        return;
-    }
-
-    DWORD error = ret ? NO_ERROR : GetLastError();
-
-    if (op->type == OpType::Accept && error == NO_ERROR) {
-        // Update the accept context
-        setsockopt(*op->out_fd, SOL_SOCKET, SO_UPDATE_ACCEPT_CONTEXT,
-                   reinterpret_cast<const char*>(&fd), sizeof(fd));
-    } else if (op->type == OpType::Connect && error == NO_ERROR) {
-        // Update the connect context
-        setsockopt(op->fd, SOL_SOCKET, SO_UPDATE_CONNECT_CONTEXT, nullptr, 0);
-    }
-
-    op->ctx->complete(error == NO_ERROR ? static_cast<ssize_t>(bytes_transferred) : -1, error);
-
-    // Remove the completed operation
-    if (it != pending_ops_.end()) {
-        auto& ops = it->second;
-        ops.erase(std::remove_if(ops.begin(), ops.end(),
-            [op](const std::unique_ptr<OverlappedOp>& p) { return p.get() == op; }),
-            ops.end());
+    // Resume all completed coroutines outside the lock
+    for (auto* ctx : to_resume) {
+        ctx->resume();
     }
 }
 

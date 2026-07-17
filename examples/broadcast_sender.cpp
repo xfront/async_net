@@ -9,7 +9,8 @@
 #include <async_net/net/udp.hpp>
 #include <cstdio>
 #include <cstring>
-#include <unistd.h>
+#include <thread>
+#include <chrono>
 
 using namespace async_net;
 
@@ -34,7 +35,7 @@ Task<void> run_sender(io_context& ctx, uint16_t port, int count, const char* des
         } else {
             fprintf(stderr, "Send failed: %zd\n", n);
         }
-        ::sleep(1);
+        std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
     printf("Done.\n");

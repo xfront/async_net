@@ -8,7 +8,6 @@
 #include <cstring>
 #include <stdexcept>
 #include <algorithm>
-#include <vector>
 
 namespace async_net {
 
@@ -140,14 +139,60 @@ void EpollBackend::async_sendto(socket_t fd, const void* buf, size_t len, const 
     try_complete_write(fd);
 }
 
+void EpollBackend::async_wait_readable(socket_t fd, std::shared_ptr<OperationContext> ctx) {
+    std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        // Called from within poll() — defer
+        deferred_waits_.push_back({fd, std::move(ctx), true});
+        return;
+    }
+    ctx->set_type(OpType::WaitReadable);
+    read_ops_[fd] = PendingOp{OpType::WaitReadable, nullptr, 0, nullptr, std::move(ctx), {}, 0};
+    update_events(fd, EPOLLIN);
+}
+
+void EpollBackend::async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) {
+    std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        deferred_waits_.push_back({fd, std::move(ctx), false});
+        return;
+    }
+    ctx->set_type(OpType::WaitWritable);
+    write_ops_[fd] = PendingOp{OpType::WaitWritable, nullptr, 0, nullptr, std::move(ctx), {}, 0};
+    update_events(fd, EPOLLOUT);
+}
+
+void EpollBackend::process_deferred_waits() {
+    // Must be called with mutex_ held
+    for (auto& dw : deferred_waits_) {
+        if (dw.readable) {
+            dw.ctx->set_type(OpType::WaitReadable);
+            read_ops_[dw.fd] = PendingOp{OpType::WaitReadable, nullptr, 0, nullptr, std::move(dw.ctx), {}, 0};
+            update_events(dw.fd, EPOLLIN);
+        } else {
+            dw.ctx->set_type(OpType::WaitWritable);
+            write_ops_[dw.fd] = PendingOp{OpType::WaitWritable, nullptr, 0, nullptr, std::move(dw.ctx), {}, 0};
+            update_events(dw.fd, EPOLLOUT);
+        }
+    }
+    deferred_waits_.clear();
+}
+
 void EpollBackend::poll(int timeout_ms) {
     int n = epoll_wait(epoll_fd_, events_, MAX_EVENTS, timeout_ms);
 
     // Collect completed contexts to resume AFTER processing all events
-    std::vector<OperationContext*> to_resume;
+    // Use shared_ptr to keep OperationContext alive until after resume
+    std::vector<std::shared_ptr<OperationContext>> to_resume;
+    // Track map entries to erase AFTER resuming (shared_ptrs keep ctx alive)
+    std::vector<socket_t> erase_reads;
+    std::vector<socket_t> erase_writes;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
+
+        // Process deferred wait operations from coroutines that resumed in the previous poll
+        process_deferred_waits();
 
         for (int i = 0; i < n; ++i) {
             socket_t fd = events_[i].data.fd;
@@ -161,13 +206,13 @@ void EpollBackend::poll(int timeout_ms) {
                         ssize_t bytes = ::recv(fd, it->second.buf, it->second.len, 0);
                         if (bytes >= 0) {
                             it->second.ctx->complete(bytes, 0);
-                            to_resume.push_back(it->second.ctx.get());
-                            read_ops_.erase(it);
+                            to_resume.push_back(it->second.ctx);
+                            erase_reads.push_back(fd);
                             update_events(fd, write_ops_.count(fd) ? EPOLLOUT : 0);
                         } else if (!is_would_block()) {
                             it->second.ctx->complete(-1, errno);
-                            to_resume.push_back(it->second.ctx.get());
-                            read_ops_.erase(it);
+                            to_resume.push_back(it->second.ctx);
+                            erase_reads.push_back(fd);
                             update_events(fd, write_ops_.count(fd) ? EPOLLOUT : 0);
                         }
                     } else if (it->second.type == OpType::RecvFrom) {
@@ -179,13 +224,13 @@ void EpollBackend::poll(int timeout_ms) {
                             memcpy(&it->second.ctx->from_addr_, &from_addr, from_len);
                             it->second.ctx->from_len_ = from_len;
                             it->second.ctx->complete(bytes, 0);
-                            to_resume.push_back(it->second.ctx.get());
-                            read_ops_.erase(it);
+                            to_resume.push_back(it->second.ctx);
+                            erase_reads.push_back(fd);
                             update_events(fd, write_ops_.count(fd) ? EPOLLOUT : 0);
                         } else if (!is_would_block()) {
                             it->second.ctx->complete(-1, errno);
-                            to_resume.push_back(it->second.ctx.get());
-                            read_ops_.erase(it);
+                            to_resume.push_back(it->second.ctx);
+                            erase_reads.push_back(fd);
                             update_events(fd, write_ops_.count(fd) ? EPOLLOUT : 0);
                         }
                     } else if (it->second.type == OpType::Accept) {
@@ -194,13 +239,19 @@ void EpollBackend::poll(int timeout_ms) {
                             set_nonblocking(new_fd);
                             *it->second.out_fd = new_fd;
                             it->second.ctx->complete(0, 0);
-                            to_resume.push_back(it->second.ctx.get());
-                            read_ops_.erase(it);
+                            to_resume.push_back(it->second.ctx);
+                            erase_reads.push_back(fd);
                         } else if (!is_would_block()) {
                             it->second.ctx->complete(-1, errno);
-                            to_resume.push_back(it->second.ctx.get());
-                            read_ops_.erase(it);
+                            to_resume.push_back(it->second.ctx);
+                            erase_reads.push_back(fd);
                         }
+                    } else if (it->second.type == OpType::WaitReadable) {
+                        // Socket is readable — just signal completion
+                        it->second.ctx->complete(0, 0);
+                        to_resume.push_back(it->second.ctx);
+                        erase_reads.push_back(fd);
+                        update_events(fd, write_ops_.count(fd) ? EPOLLOUT : 0);
                     }
                 }
             }
@@ -220,13 +271,13 @@ void EpollBackend::poll(int timeout_ms) {
                         }
                         if (bytes >= 0) {
                             it->second.ctx->complete(bytes, 0);
-                            to_resume.push_back(it->second.ctx.get());
-                            write_ops_.erase(it);
+                            to_resume.push_back(it->second.ctx);
+                            erase_writes.push_back(fd);
                             update_events(fd, read_ops_.count(fd) ? EPOLLIN : 0);
                         } else if (!is_would_block()) {
                             it->second.ctx->complete(-1, errno);
-                            to_resume.push_back(it->second.ctx.get());
-                            write_ops_.erase(it);
+                            to_resume.push_back(it->second.ctx);
+                            erase_writes.push_back(fd);
                             update_events(fd, read_ops_.count(fd) ? EPOLLIN : 0);
                         }
                     } else if (it->second.type == OpType::Connect) {
@@ -234,8 +285,14 @@ void EpollBackend::poll(int timeout_ms) {
                         socklen_t len = sizeof(err);
                         getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len);
                         it->second.ctx->complete(err == 0 ? 0 : -1, err);
-                        to_resume.push_back(it->second.ctx.get());
-                        write_ops_.erase(it);
+                        to_resume.push_back(it->second.ctx);
+                        erase_writes.push_back(fd);
+                        update_events(fd, read_ops_.count(fd) ? EPOLLIN : 0);
+                    } else if (it->second.type == OpType::WaitWritable) {
+                        // Socket is writable — just signal completion
+                        it->second.ctx->complete(0, 0);
+                        to_resume.push_back(it->second.ctx);
+                        erase_writes.push_back(fd);
                         update_events(fd, read_ops_.count(fd) ? EPOLLIN : 0);
                     }
                 }
@@ -243,8 +300,19 @@ void EpollBackend::poll(int timeout_ms) {
         }
     }
 
-    // Resume all completed coroutines outside the lock
-    for (auto* ctx : to_resume) {
+    // Resume all completed coroutines outside the lock.
+    // The shared_ptrs in to_resume keep OperationContext alive even after
+    // map entries were erased inside the locked section above.
+    // We erase maps BEFORE resuming so coroutines can re-register the same fd
+    // (e.g., SSL retry after WANT_READ). The shared_ptr copies in to_resume
+    // prevent use-after-free.
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto fd : erase_reads) read_ops_.erase(fd);
+        for (auto fd : erase_writes) write_ops_.erase(fd);
+    }
+
+    for (auto& ctx : to_resume) {
         ctx->resume();
     }
 }

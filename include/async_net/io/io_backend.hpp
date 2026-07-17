@@ -47,6 +47,12 @@ public:
         async_write(fd, buf, len, std::move(ctx)); // default: same as write
     }
 
+    // Wait for socket readability (for SSL WANT_READ integration)
+    virtual void async_wait_readable(socket_t fd, std::shared_ptr<OperationContext> ctx) = 0;
+
+    // Wait for socket writability (for SSL WANT_WRITE integration)
+    virtual void async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) = 0;
+
     // Convenience wrappers
     virtual void async_read_some(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
         async_read(fd, buf, len, std::move(ctx));

@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build-linux:
+    name: Linux (GCC + epoll)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Echo server/client test
+        run: |
+          ./build/echo_server 17777 &
+          SERVER_PID=$!
+          sleep 1
+          ./build/echo_client 127.0.0.1 17777
+          kill $SERVER_PID 2>/dev/null || true
+
+  build-linux-mingw:
+    name: Linux → Windows (MinGW cross-compile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+
+      - name: Configure
+        run: cmake -B build-mingw -DCMAKE_TOOLCHAIN_FILE=../cmake/mingw-w64-x86_64.cmake -DCMAKE_BUILD_TYPE=Release
+        working-directory: .
+
+      - name: Build
+        run: cmake --build build-mingw -j$(nproc)
+
+      - name: Verify PE executables
+        run: file build-mingw/*.exe | grep "PE32+"
+
+  build-macos:
+    name: macOS (kqueue)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build -j$(sysctl -n hw.ncpu)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Echo server/client test
+        run: |
+          ./build/echo_server 17777 &
+          SERVER_PID=$!
+          sleep 1
+          ./build/echo_client 127.0.0.1 17777
+          kill $SERVER_PID 2>/dev/null || true
+
+  build-windows-msvc:
+    name: Windows (MSVC + IOCP)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Test
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
+      - name: Echo server/client test
+        run: |
+          Start-Process -FilePath ".\build\Release\echo_server.exe" -ArgumentList "17777"
+          Start-Sleep -Seconds 2
+          & ".\build\Release\echo_client.exe" 127.0.0.1 17777
+          Stop-Process -Name "echo_server" -ErrorAction SilentlyContinue

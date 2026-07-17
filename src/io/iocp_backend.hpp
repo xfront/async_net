@@ -25,6 +25,10 @@ public:
     void async_write(socket_t fd, const void* buf, size_t len, std::shared_ptr<OperationContext> ctx) override;
     void async_accept(socket_t listen_fd, socket_t* out_fd, std::shared_ptr<OperationContext> ctx) override;
     void async_connect(socket_t fd, const struct sockaddr* addr, socklen_t addrlen, std::shared_ptr<OperationContext> ctx) override;
+    void async_recvfrom(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) override;
+    void async_sendto(socket_t fd, const void* buf, size_t len, const struct sockaddr* to, socklen_t tolen, std::shared_ptr<OperationContext> ctx) override;
+    void async_wait_readable(socket_t fd, std::shared_ptr<OperationContext> ctx) override;
+    void async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) override;
 
     const char* name() const override { return "iocp"; }
 
@@ -38,9 +42,17 @@ private:
         socket_t* out_fd;
         std::shared_ptr<OperationContext> ctx;
         socket_t fd;
+        // For sendto/recvfrom
+        struct sockaddr_storage dest_addr;
+        socklen_t dest_addr_len;
+        WSABUF wsa_buf;
 
         OverlappedOp() {
             memset(&overlapped, 0, sizeof(overlapped));
+            memset(&dest_addr, 0, sizeof(dest_addr));
+            dest_addr_len = 0;
+            wsa_buf.buf = nullptr;
+            wsa_buf.len = 0;
         }
     };
 

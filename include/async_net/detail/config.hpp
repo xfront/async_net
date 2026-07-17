@@ -35,6 +35,7 @@
     #include <fcntl.h>
     #include <errno.h>
     #include <sys/ioctl.h>
+    #include <netdb.h>
     using socket_t = int;
     constexpr socket_t invalid_socket = -1;
 #endif

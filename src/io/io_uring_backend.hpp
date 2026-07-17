@@ -33,6 +33,8 @@ public:
     void async_connect(socket_t fd, const struct sockaddr* addr, socklen_t addrlen, std::shared_ptr<OperationContext> ctx) override;
     void async_recvfrom(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) override;
     void async_sendto(socket_t fd, const void* buf, size_t len, const struct sockaddr* to, socklen_t tolen, std::shared_ptr<OperationContext> ctx) override;
+    void async_wait_readable(socket_t fd, std::shared_ptr<OperationContext> ctx) override;
+    void async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) override;
 
     const char* name() const override { return "io_uring"; }
 

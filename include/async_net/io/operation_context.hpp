@@ -4,7 +4,9 @@
 #include <coroutine>
 #include <cstddef>
 #include <atomic>
+#ifndef ASYNC_NET_WINDOWS
 #include <sys/socket.h>
+#endif
 
 namespace async_net {
 
@@ -17,6 +19,8 @@ enum class OpType {
     RecvFrom,
     SendTo,
     Timer,
+    WaitReadable,   // Wait for socket readability (for SSL integration)
+    WaitWritable,   // Wait for socket writability (for SSL integration)
     Custom
 };
 

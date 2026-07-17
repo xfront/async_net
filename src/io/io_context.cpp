@@ -1,6 +1,20 @@
 #include <async_net/io/io_context.hpp>
 #include <stdexcept>
 
+#ifdef ASYNC_NET_WINDOWS
+#include <winsock2.h>
+namespace {
+struct WinsockInit {
+    WinsockInit() {
+        WSADATA wsa;
+        WSAStartup(MAKEWORD(2, 2), &wsa);
+    }
+    ~WinsockInit() { WSACleanup(); }
+};
+static WinsockInit g_winsock_init;
+} // anonymous namespace
+#endif
+
 #ifdef ASYNC_NET_LINUX
 #include "epoll_backend.hpp"
 #include "io_uring_backend.hpp"

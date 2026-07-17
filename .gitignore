@@ -1,0 +1,33 @@
+# Rust build artifacts
+/target
+**/target/
+debug/
+release/
+*build*/
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Documentation
+ice-docs/
+
+# Benchmark data
+*.bench
+
+# Coverage
+*.gcda
+*.gcno
+coverage/
+
+# Cargo lock (optional - uncomment if you want to ignore it)
+# Cargo.lock

@@ -35,6 +35,7 @@ public:
     void async_sendto(socket_t fd, const void* buf, size_t len, const struct sockaddr* to, socklen_t tolen, std::shared_ptr<OperationContext> ctx) override;
     void async_wait_readable(socket_t fd, std::shared_ptr<OperationContext> ctx) override;
     void async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) override;
+    void wake() override;
 
     const char* name() const override { return "io_uring"; }
 
@@ -68,6 +69,8 @@ private:
 
     // Ring fd (from io_uring_setup)
     int ring_fd_;
+    int wake_fd_ = -1;  // eventfd for cross-thread wakeup
+    static constexpr __u64 WAKEUP_USER_DATA = ~static_cast<__u64>(0);
 
     // Submission queue pointers (mmap'd)
     unsigned* sq_head_;

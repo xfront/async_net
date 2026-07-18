@@ -31,3 +31,6 @@ coverage/
 
 # Cargo lock (optional - uncomment if you want to ignore it)
 # Cargo.lock
+/third_party/
+.vcpkg/
+.local/

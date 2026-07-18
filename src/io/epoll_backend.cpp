@@ -4,6 +4,7 @@
 
 #include "epoll_backend.hpp"
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <unistd.h>
 #include <cstring>
 #include <stdexcept>
@@ -16,9 +17,21 @@ EpollBackend::EpollBackend() {
     if (epoll_fd_ < 0) {
         throw std::runtime_error("Failed to create epoll fd");
     }
+
+    // Create eventfd for cross-thread wakeup
+    wake_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (wake_fd_ >= 0) {
+        struct epoll_event ev{};
+        ev.events = EPOLLIN;
+        ev.data.fd = wake_fd_;
+        epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, wake_fd_, &ev);
+    }
 }
 
 EpollBackend::~EpollBackend() {
+    if (wake_fd_ >= 0) {
+        ::close(wake_fd_);
+    }
     if (epoll_fd_ >= 0) {
         ::close(epoll_fd_);
     }
@@ -198,6 +211,13 @@ void EpollBackend::poll(int timeout_ms) {
             socket_t fd = events_[i].data.fd;
             uint32_t revents = events_[i].events;
 
+            // Skip wake eventfd — just consume the data
+            if (fd == wake_fd_) {
+                uint64_t val;
+                ::read(wake_fd_, &val, sizeof(val));
+                continue;
+            }
+
             // Handle read events
             if (revents & (EPOLLIN | EPOLLHUP | EPOLLERR)) {
                 auto it = read_ops_.find(fd);
@@ -314,6 +334,14 @@ void EpollBackend::poll(int timeout_ms) {
 
     for (auto& ctx : to_resume) {
         ctx->resume();
+    }
+}
+
+void EpollBackend::wake() {
+    if (wake_fd_ >= 0) {
+        uint64_t val = 1;
+        auto r = ::write(wake_fd_, &val, sizeof(val));
+        (void)r; // ignore errors (EAGAIN is fine)
     }
 }
 

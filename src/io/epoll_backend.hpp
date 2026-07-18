@@ -30,6 +30,7 @@ public:
     void async_sendto(socket_t fd, const void* buf, size_t len, const struct sockaddr* to, socklen_t tolen, std::shared_ptr<OperationContext> ctx) override;
     void async_wait_readable(socket_t fd, std::shared_ptr<OperationContext> ctx) override;
     void async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) override;
+    void wake() override;
 
     const char* name() const override { return "epoll"; }
 
@@ -49,6 +50,7 @@ private:
     void try_complete_write(socket_t fd);
 
     int epoll_fd_;
+    int wake_fd_ = -1;  // eventfd for cross-thread wakeup
     std::unordered_map<socket_t, PendingOp> read_ops_;
     std::unordered_map<socket_t, PendingOp> write_ops_;
     std::unordered_map<socket_t, uint32_t> fd_events_;  // Current epoll events per fd

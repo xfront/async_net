@@ -62,6 +62,10 @@ public:
         async_write(fd, buf, len, std::move(ctx));
     }
 
+    // Wake up the backend from poll() (called when work is posted from another thread).
+    // Default: no-op. Backends should override to provide efficient wakeup.
+    virtual void wake() {}
+
     // Get the backend name
     virtual const char* name() const = 0;
 };

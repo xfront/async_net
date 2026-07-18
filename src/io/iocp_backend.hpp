@@ -29,6 +29,7 @@ public:
     void async_sendto(socket_t fd, const void* buf, size_t len, const struct sockaddr* to, socklen_t tolen, std::shared_ptr<OperationContext> ctx) override;
     void async_wait_readable(socket_t fd, std::shared_ptr<OperationContext> ctx) override;
     void async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) override;
+    void wake() override;
 
     const char* name() const override { return "iocp"; }
 
@@ -57,6 +58,7 @@ private:
     };
 
     HANDLE iocp_handle_;
+    static constexpr ULONG_PTR WAKEUP_KEY = static_cast<ULONG_PTR>(-1);
     std::unordered_map<socket_t, std::vector<std::unique_ptr<OverlappedOp>>> pending_ops_;
     std::mutex mutex_;
 

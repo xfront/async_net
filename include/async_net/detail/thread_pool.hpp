@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <atomic>
 #include <future>
+#include <type_traits>
 
 namespace async_net {
 
@@ -15,34 +16,26 @@ class thread_pool {
 public:
     explicit thread_pool(size_t num_threads = std::thread::hardware_concurrency())
         : stop_(false) {
+        if (num_threads == 0) num_threads = 1;
         for (size_t i = 0; i < num_threads; ++i) {
             workers_.emplace_back([this] { worker_loop(); });
         }
     }
 
     ~thread_pool() {
-        {
-            std::unique_lock<std::mutex> lock(mutex_);
-            stop_ = true;
-        }
-        condition_.notify_all();
-        for (auto& worker : workers_) {
-            if (worker.joinable()) {
-                worker.join();
-            }
-        }
+        stop();
     }
 
     thread_pool(const thread_pool&) = delete;
     thread_pool& operator=(const thread_pool&) = delete;
 
-    // Submit a task to the thread pool
-    template<typename F, typename... Args>
-    auto submit(F&& f, Args&&... args) -> std::future<decltype(f(args...))> {
-        using return_type = decltype(f(args...));
+    // Submit a callable and get a future. Supports move-only callables.
+    template<typename F>
+    auto submit(F&& f) -> std::future<decltype(f())> {
+        using return_type = decltype(f());
 
         auto task = std::make_shared<std::packaged_task<return_type()>>(
-            std::bind(std::forward<F>(f), std::forward<Args>(args)...)
+            std::forward<F>(f)
         );
 
         std::future<return_type> result = task->get_future();
@@ -62,7 +55,7 @@ public:
     // Get the number of threads
     size_t size() const { return workers_.size(); }
 
-    // Post a simple function (no return value)
+    // Post a simple function (no return value). Thread-safe.
     void post(std::function<void()> func) {
         {
             std::unique_lock<std::mutex> lock(mutex_);
@@ -70,6 +63,21 @@ public:
             tasks_.push(std::move(func));
         }
         condition_.notify_one();
+    }
+
+    // Signal all workers to stop and wait for completion.
+    void stop() {
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            stop_ = true;
+        }
+        condition_.notify_all();
+        for (auto& worker : workers_) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
+        workers_.clear();
     }
 
 private:

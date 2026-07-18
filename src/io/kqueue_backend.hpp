@@ -30,6 +30,7 @@ public:
     void async_sendto(socket_t fd, const void* buf, size_t len, const struct sockaddr* to, socklen_t tolen, std::shared_ptr<OperationContext> ctx) override;
     void async_wait_readable(socket_t fd, std::shared_ptr<OperationContext> ctx) override;
     void async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) override;
+    void wake() override;
 
     const char* name() const override { return "kqueue"; }
 
@@ -57,6 +58,7 @@ private:
     std::mutex mutex_;
 
     static constexpr int MAX_EVENTS = 1024;
+    static constexpr uintptr_t WAKEUP_IDENT = static_cast<uintptr_t>(-1);
     struct kevent events_[MAX_EVENTS];
 };
 

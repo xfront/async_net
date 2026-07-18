@@ -4,6 +4,7 @@
 #include "../detail/config.hpp"
 #include <memory>
 #include <cstring>
+#include <string>
 
 namespace async_net {
 
@@ -23,7 +24,23 @@ public:
         memset(&addr_, 0, sizeof(addr_));
         addr_.sin_family = AF_INET;
         addr_.sin_port = htons(port);
-        ::inet_pton(AF_INET, addr, &addr_.sin_addr);
+        // Try numeric IP first
+        if (::inet_pton(AF_INET, addr, &addr_.sin_addr) <= 0) {
+#ifndef ASYNC_NET_WINDOWS
+            // Resolve hostname via DNS
+            struct addrinfo hints{};
+            hints.ai_family = AF_INET;
+            hints.ai_socktype = SOCK_DGRAM;
+            struct addrinfo* res = nullptr;
+            if (::getaddrinfo(addr, nullptr, &hints, &res) == 0 && res) {
+                auto* sin = reinterpret_cast<const struct sockaddr_in*>(res->ai_addr);
+                addr_.sin_addr = sin->sin_addr;
+                ::freeaddrinfo(res);
+            }
+#else
+            addr_.sin_addr.s_addr = INADDR_ANY;
+#endif
+        }
     }
 
     endpoint(const struct sockaddr_in& addr) : addr_(addr) {}

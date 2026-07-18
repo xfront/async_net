@@ -6,6 +6,7 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/socket.h>
+#include <sys/eventfd.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <poll.h>
@@ -49,6 +50,9 @@ IoUringBackend::IoUringBackend(unsigned ring_size)
 
 IoUringBackend::~IoUringBackend() {
     unmap_ring();
+    if (wake_fd_ >= 0) {
+        ::close(wake_fd_);
+    }
     if (ring_fd_ >= 0) {
         ::close(ring_fd_);
     }
@@ -155,6 +159,21 @@ void IoUringBackend::setup_ring(unsigned ring_size) {
     }
     sqes_sz_ = sqes_sz;
     sqes_ = static_cast<struct io_uring_sqe*>(sqes_ptr_);
+
+    // Create eventfd for cross-thread wakeup
+    wake_fd_ = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (wake_fd_ >= 0) {
+        // Register a POLL_ADD SQE for the eventfd so writes to it
+        // generate CQEs that wake up io_uring_enter().
+        struct io_uring_sqe* sqe = get_sqe();
+        if (sqe) {
+            sqe->opcode = IORING_OP_POLL_ADD;
+            sqe->fd = wake_fd_;
+            sqe->poll32_events = POLLIN;
+            sqe->user_data = WAKEUP_USER_DATA;
+            submit_sqes();
+        }
+    }
 }
 
 void IoUringBackend::unmap_ring() {
@@ -218,6 +237,23 @@ void IoUringBackend::process_cqes(std::vector<OperationContext*>& to_resume) {
     while (head != tail) {
         unsigned index = head & cq_mask_;
         struct io_uring_cqe* cqe = &cqes_[index];
+
+        // Handle wakeup eventfd completion
+        if (cqe->user_data == WAKEUP_USER_DATA) {
+            // Consume the eventfd data
+            uint64_t val;
+            ::read(wake_fd_, &val, sizeof(val));
+            // Re-register POLL_ADD for next wakeup
+            struct io_uring_sqe* sqe = get_sqe();
+            if (sqe) {
+                sqe->opcode = IORING_OP_POLL_ADD;
+                sqe->fd = wake_fd_;
+                sqe->poll32_events = POLLIN;
+                sqe->user_data = WAKEUP_USER_DATA;
+            }
+            head++;
+            continue;
+        }
 
         auto* ctx = reinterpret_cast<OperationContext*>(cqe->user_data);
         if (ctx) {
@@ -539,6 +575,14 @@ void IoUringBackend::poll(int timeout_ms) {
     // Resume coroutines OUTSIDE the lock
     for (auto* ctx : to_resume) {
         ctx->resume();
+    }
+}
+
+void IoUringBackend::wake() {
+    if (wake_fd_ >= 0) {
+        uint64_t val = 1;
+        auto r = ::write(wake_fd_, &val, sizeof(val));
+        (void)r; // ignore errors (EAGAIN is fine)
     }
 }
 

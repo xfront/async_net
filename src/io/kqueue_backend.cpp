@@ -17,6 +17,11 @@ KqueueBackend::KqueueBackend() {
     if (kqueue_fd_ < 0) {
         throw std::runtime_error("Failed to create kqueue fd");
     }
+
+    // Register EVFILT_USER for cross-thread wakeup
+    struct kevent ev;
+    EV_SET(&ev, WAKEUP_IDENT, EVFILT_USER, EV_ADD | EV_CLEAR, 0, 0, nullptr);
+    kevent(kqueue_fd_, &ev, 1, nullptr, 0, nullptr);
 }
 
 KqueueBackend::~KqueueBackend() {
@@ -141,6 +146,11 @@ void KqueueBackend::poll(int timeout_ms) {
         std::lock_guard<std::mutex> lock(mutex_);
 
         for (int i = 0; i < n; ++i) {
+            // Skip wakeup events (EVFILT_USER)
+            if (events_[i].filter == EVFILT_USER) {
+                continue;
+            }
+
             socket_t fd = events_[i].ident;
             short filter = events_[i].filter;
 
@@ -285,6 +295,12 @@ void KqueueBackend::try_complete_sendto(socket_t fd, std::vector<OperationContex
     } else {
         register_event(fd, EVFILT_WRITE);
     }
+}
+
+void KqueueBackend::wake() {
+    struct kevent ev;
+    EV_SET(&ev, WAKEUP_IDENT, EVFILT_USER, 0, NOTE_TRIGGER, 0, nullptr);
+    kevent(kqueue_fd_, &ev, 1, nullptr, 0, nullptr);
 }
 
 } // namespace async_net

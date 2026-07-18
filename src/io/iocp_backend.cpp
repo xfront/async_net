@@ -296,7 +296,16 @@ void IocpBackend::poll(int timeout_ms) {
     );
 
     if (overlapped == nullptr) {
+        // Timeout, error, or wakeup — check if it's a wakeup
+        if (completion_key == WAKEUP_KEY) {
+            return;  // Wakeup from another thread, just return
+        }
         return;  // Timeout or error
+    }
+
+    // Skip wakeup packets (shouldn't have overlapped, but be safe)
+    if (completion_key == WAKEUP_KEY) {
+        return;
     }
 
     // Get the operation from the overlapped pointer
@@ -355,5 +364,16 @@ void IocpBackend::poll(int timeout_ms) {
 }
 
 } // namespace async_net
+
+void IocpBackend::wake() {
+    if (iocp_handle_ != nullptr) {
+        PostQueuedCompletionStatus(
+            iocp_handle_,
+            0,               // bytes_transferred (unused)
+            WAKEUP_KEY,      // completion_key (sentinel)
+            nullptr          // lpOverlapped (null = not a real I/O completion)
+        );
+    }
+}
 
 #endif // ASYNC_NET_WINDOWS

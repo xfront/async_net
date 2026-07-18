@@ -1,0 +1,23 @@
+{
+  "name": "async-net",
+  "version-string": "1.0.0",
+  "description": "High-performance C++20 coroutine-based async network library",
+  "homepage": "",
+  "license": "MIT",
+  "dependencies": [
+    {
+      "name": "wolfssl",
+      "features": [
+        "quic",
+        "dtls"
+      ],
+      "platform": "!uwp"
+    },
+    {
+      "name": "ngtcp2",
+      "features": [
+        "wolfssl"
+      ]
+    }
+  ]
+}

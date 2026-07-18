@@ -10,11 +10,25 @@
   - **io_uring** — Linux 5.1+（纯异步，可选）
   - **kqueue** — macOS / FreeBSD / OpenBSD
   - **IOCP** — Windows
-- **零外部依赖** — 仅使用 C++ 标准库和操作系统 API
-- **可选 SSL/TLS** — 通过 OpenSSL 提供内置 TLS 支持（`-DASYNC_NET_WITH_SSL=ON`）
+- **HTTP 协议栈** — 完整的 HTTP/1.1、HTTP/2 和 HTTP/3 支持：
+  - HTTP/1.1，支持 keep-alive 和连接池
+  - HTTP/2，支持多路复用、HPACK 和 Server Push
+  - HTTP/3 (QUIC)，支持 QPACK 和 Server Push
+  - 基于 URL 的自动协议选择（客户端）
+- **Executor 框架** — 灵活的线程任务调度：
+  - `executor` 抽象接口（类似 `boost::asio::executor`）
+  - `thread_pool_executor` — 将任务分发到线程池
+  - `strand` — 串行执行保证（不并发）
+  - `co_spawn` / `run_on` — 在指定 executor 上启动协程
+  - `work_guard` — 控制事件循环生命周期
+  - `schedule_at_fixed_rate` — 周期性定时调度（类似 Java `ScheduledExecutorService`）
+  - `sleep_for` / `sleep_until` — 协程异步睡眠
+- **Spawn 与 JoinHandle** — 使用 `spawn()` 立即启动协程，通过 `JoinHandle<T>` 等待结果
+- **零外部依赖** — 仅使用 C++ 标准库和操作系统 API（vcpkg 可选用于 SSL/QUIC）
+- **可选 SSL/TLS** — 通过 OpenSSL / wolfSSL 提供内置 TLS 支持（`-DASYNC_NET_WITH_SSL=ON`）
 - **TCP 和 UDP 支持** — 完整的 TCP 和 UDP 套接字异步操作
 - **多播与广播** — 内置 UDP 多播/广播套接字选项支持
-- **线程安全** — 所有 I/O 后端操作均使用互斥锁保护
+- **线程安全** — 所有 I/O 后端操作均使用互斥锁保护；跨线程 `post()` 自动唤醒
 - **CMake 构建系统** — 易于集成到现有项目
 
 ## 项目结构
@@ -25,29 +39,50 @@ async_net/
 ├── include/async_net/
 │   ├── coroutine/
 │   │   ├── task.hpp              # Task<T> 协程类型
+│   │   ├── spawn.hpp             # spawn() / JoinHandle<T>
 │   │   └── async_result.hpp      # 回调到协程的桥接
 │   ├── detail/
 │   │   ├── config.hpp            # 平台检测与宏定义
 │   │   ├── error_code.hpp        # 轻量级错误包装
 │   │   ├── scope_guard.hpp       # RAII 作用域守卫
 │   │   └── thread_pool.hpp       # 线程池实现
+│   ├── executor/
+│   │   ├── executor.hpp          # executor 接口与 any_executor
+│   │   ├── thread_pool_executor.hpp  # thread_pool → executor 适配器
+│   │   ├── strand.hpp            # 串行执行保证
+│   │   ├── schedule.hpp          # sleep_for、scheduled_task
+│   │   └── coroutine.hpp         # run_on、co_spawn、schedule_at_fixed_rate
+│   ├── http/
+│   │   ├── types.hpp             # HTTP 类型（request、response、method、headers）
+│   │   ├── server.hpp            # HTTP 服务器（路由分发）
+│   │   ├── client.hpp            # HTTP 客户端（连接池）
+│   │   ├── handler.hpp           # 处理函数类型
+│   │   ├── http2_session.hpp     # HTTP/2 会话（多路复用、Push）
+│   │   └── http3_session.hpp     # HTTP/3 (QUIC) 会话
 │   ├── io/
 │   │   ├── io_backend.hpp        # 抽象 I/O 后端接口
-│   │   ├── io_context.hpp        # 事件循环 (io_context)
+│   │   ├── io_context.hpp        # 事件循环 (io_context) + executor
 │   │   └── operation_context.hpp  # 每操作状态
 │   └── net/
 │       ├── buffer.hpp            # 缓冲区类型（mutable/const/dynamic）
 │       ├── socket.hpp            # 基础套接字类
 │       ├── tcp.hpp               # TCP 套接字与接受器
-│       ├── ssl.hpp               # SSL/TLS 上下文与流 (需要 OpenSSL)
+│       ├── ssl.hpp               # SSL/TLS 上下文与流
 │       └── udp.hpp               # UDP 套接字与端点
-├── src/io/
-│   ├── io_context.cpp            # 事件循环实现
-│   ├── epoll_backend.hpp/.cpp    # epoll 后端 (Linux)
-│   ├── io_uring_backend.hpp/.cpp # io_uring 后端 (Linux 5.1+)
-│   ├── kqueue_backend.hpp/.cpp   # kqueue 后端 (macOS/BSD)
-│   └── iocp_backend.hpp/.cpp     # IOCP 后端 (Windows)
-│   └── ssl.cpp                   # SSL/TLS 实现 (OpenSSL)
+├── src/
+│   ├── io/
+│   │   ├── io_context.cpp        # 事件循环实现
+│   │   ├── epoll_backend.hpp/.cpp    # epoll 后端 (Linux)
+│   │   ├── io_uring_backend.hpp/.cpp # io_uring 后端 (Linux 5.1+)
+│   │   ├── kqueue_backend.hpp/.cpp   # kqueue 后端 (macOS/BSD)
+│   │   ├── iocp_backend.hpp/.cpp     # IOCP 后端 (Windows)
+│   │   └── ssl.cpp                 # SSL/TLS 实现
+│   └── http/
+│       ├── h1_codec.hpp          # HTTP/1.1 编解码器
+│       ├── h2_frame.hpp          # HTTP/2 帧解析/构建
+│       ├── h3_frame.hpp          # HTTP/3 帧解析/构建
+│       ├── hpack.hpp             # HPACK 头部压缩
+│       └── qpack.hpp             # QPACK 头部压缩
 ├── examples/
 │   ├── echo_server.cpp           # 异步 Echo 服务器
 │   ├── echo_client.cpp           # 异步 Echo 客户端
@@ -56,10 +91,20 @@ async_net/
 │   ├── multicast_receiver.cpp    # 多播接收端
 │   ├── broadcast_sender.cpp      # 广播发送端
 │   ├── broadcast_receiver.cpp    # 广播接收端
-│   ├── ssl_echo_server.cpp       # TLS 回显服务器 (需要 OpenSSL)
-│   └── ssl_echo_client.cpp       # TLS 回显客户端 (需要 OpenSSL)
+│   ├── ssl_echo_server.cpp       # TLS 回显服务器
+│   ├── ssl_echo_client.cpp       # TLS 回显客户端
+│   ├── http_server.cpp           # HTTP/1.1 服务器
+│   ├── http_client.cpp           # HTTP 客户端
+│   ├── http_multi_server.cpp     # 多协议服务器 (H1/H2/H3)
+│   ├── http_multi_client.cpp     # 基于 URL 的多协议客户端
+│   ├── h2_server.cpp             # HTTP/2 服务器（Server Push）
+│   └── h3_server.cpp             # HTTP/3 (QUIC) 服务器
 └── tests/
     ├── test_task.cpp             # Task<T> 单元测试
+    ├── test_spawn.cpp            # spawn / JoinHandle 测试
+    ├── test_executor.cpp         # Executor / strand / co_spawn 测试
+    ├── test_h2_push.cpp          # HTTP/2 Server Push 测试
+    ├── test_schedule.cpp         # 定时器 / schedule / sleep_for 测试
     ├── test_simple.cpp
     ├── test_nested.cpp
     └── test_void.cpp
@@ -72,6 +117,48 @@ async_net/
 - **C++ 标准**: C++20
 
 ## 构建
+
+### 使用 vcpkg 构建（推荐 — 启用 SSL、HTTP/2、HTTP/3）
+
+项目使用 [vcpkg](https://github.com/microsoft/vcpkg) manifest 模式管理可选依赖（wolfSSL、ngtcp2）。使用 vcpkg 时，SSL/TLS、HTTP/2 和 HTTP/3 会自动检测并启用。
+
+```bash
+# 1. 安装 vcpkg（一次性操作）
+git clone https://github.com/microsoft/vcpkg.git
+cd vcpkg && ./bootstrap-vcpkg.sh
+cd ..
+
+# 2. 配置 — 传入 vcpkg 工具链文件
+mkdir build && cd build
+cmake .. -DCMAKE_TOOLCHAIN_FILE=/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake \
+         -DCMAKE_BUILD_TYPE=Release
+
+# 3. 构建（vcpkg 自动下载并编译 wolfssl[quic] + ngtcp2[wolfssl]）
+cmake --build . -j$(nproc)
+
+# 4. 运行测试
+ctest --output-on-failure
+```
+
+> **工作原理**：`vcpkg.json` manifest 声明了 `wolfssl[quic]` 和 `ngtcp2[wolfssl]` 依赖。CMake 的 `find_package()` 调用在配置阶段由 vcpkg 自动解析，无需手动安装任何库。
+
+**依赖关系：**
+
+```
+async_net
+├── wolfssl[quic]        → TLS 1.3 + QUIC 支持
+└── ngtcp2[wolfssl]      → QUIC 协议（使用 wolfSSL 作为加密后端）
+```
+
+### 不使用 vcpkg 构建（基础模式 — 无 SSL/HTTP2/HTTP3）
+
+不使用 vcpkg 时，库仅构建基础 TCP/UDP 支持。SSL、HTTP/2 和 HTTP/3 会自动禁用。
+
+```bash
+mkdir build && cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc)
+```
 
 ### Linux
 
@@ -277,43 +364,58 @@ int main() {
 ## 架构设计
 
 ```
-┌─────────────────────────────────────────────┐
-│            用户代码（协程）                    │
-│         co_await socket.async_read_some()   │
-├─────────────────────────────────────────────┤
-│         协程层 (Task<T>)                     │
-│    Awaiter 桥接协程 ↔ I/O 后端               │
-├─────────────────────────────────────────────┤
-│              io_context（事件循环）           │
-│         poll() → 恢复协程                    │
-├─────────────────────────────────────────────┤
-│           I/O 后端（抽象接口）                │
-│   epoll │ io_uring │ kqueue │ IOCP          │
-├─────────────────────────────────────────────┤
-│               操作系统 I/O API               │
-│   epoll_wait │ kevent │ GetQueuedCompletionStatus │
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                  用户代码（协程）                              │
+│   co_await socket.async_read()  │  co_await client.get(url) │
+├──────────────────────────────────────────────────────────────┤
+│              HTTP 协议栈                                      │
+│   HTTP/1.1 (keep-alive) │ HTTP/2 (多路复用) │ HTTP/3 (QUIC) │
+├──────────────────────────────────────────────────────────────┤
+│         Executor 框架                                         │
+│   io_context │ thread_pool_executor │ strand │ co_spawn      │
+├──────────────────────────────────────────────────────────────┤
+│         协程层 (Task<T>、JoinHandle<T>、spawn)               │
+│    Awaiter 桥接协程 ↔ I/O 后端                               │
+├──────────────────────────────────────────────────────────────┤
+│              io_context（事件循环 + executor）                │
+│         poll() → 恢复协程 │ post() → wake()                 │
+├──────────────────────────────────────────────────────────────┤
+│           I/O 后端（抽象接口）                                │
+│   epoll │ io_uring │ kqueue │ IOCP                           │
+├──────────────────────────────────────────────────────────────┤
+│               操作系统 I/O API                                │
+│   epoll_wait │ kevent │ GetQueuedCompletionStatus            │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ### 关键设计决策
 
 1. **惰性协程** — `Task<T>` 是惰性协程，不会自动启动，需要调用 `.resume()` 或被另一个协程 `co_await`。
-2. **同步完成检测** — Awaiter 检查后端是否同步完成了操作（如数据已就绪），如果已完成则避免挂起协程。
-3. **锁外恢复** — 事件循环在持有锁时收集已完成的操作，释放锁后再恢复协程，防止死锁。
-4. **句柄所有权** — 当协程被 `co_await` 时，句柄所有权通过 `std::exchange` 转移，防止重复销毁。
+2. **即时启动** — `spawn()` 立即启动协程，返回 `JoinHandle<T>` 用于等待结果。
+3. **同步完成检测** — Awaiter 检查后端是否同步完成了操作（如数据已就绪），如果已完成则避免挂起协程。
+4. **锁外恢复** — 事件循环在持有锁时收集已完成的操作，释放锁后再恢复协程，防止死锁。
+5. **句柄所有权** — 当协程被 `co_await` 时，句柄所有权通过 `std::exchange` 转移，防止重复销毁。
+6. **Executor 抽象** — `io_context` 继承 `executor`，支持在 IO 线程、线程池和 strand 上统一调度任务。
 
 ## API 参考
 
 ### `io_context`
 
-驱动所有异步操作的事件循环。
+驱动所有异步操作的事件循环，同时也是一个 `executor`。
 
 ```cpp
 io_context ctx;
-ctx.run();       // 运行直到停止
-ctx.run_one();   // 运行一个操作
-ctx.poll();      // 非阻塞轮询
-ctx.stop();      // 停止事件循环
+ctx.run();               // 运行直到停止
+ctx.run_until_complete(); // 运行直到所有 work_guard 释放
+ctx.run_one();           // 运行一个操作
+ctx.poll();              // 非阻塞轮询
+ctx.stop();              // 停止事件循环
+ctx.post([]{ ... });     // 投递任务（线程安全，唤醒阻塞的 poll）
+
+// work_guard：防止 run_until_complete() 提前退出
+auto guard = ctx.make_work();
+// ... 执行异步工作 ...
+guard.reset();           // 释放 work，允许退出
 ```
 
 ### `tcp::socket`
@@ -360,6 +462,101 @@ Task<void> consumer() {
     int val = co_await compute();
     co_return;
 }
+```
+
+### `spawn()` 与 `JoinHandle<T>`
+
+立即启动协程，可选等待其结果。
+
+```cpp
+// Fire-and-forget
+spawn(my_task()).detach();
+
+// 等待结果
+auto handle = spawn(compute());
+int result = co_await std::move(handle);
+```
+
+### Executor 框架
+
+使用 executor 抽象跨线程调度任务。
+
+```cpp
+// 线程池 executor
+thread_pool pool(4);
+thread_pool_executor pool_exec(pool);
+pool_exec.post([]{ /* 在线程池线程上运行 */ });
+
+// strand：串行执行（不并发）
+strand s(ctx);
+s.post([]{ /* 串行运行 */ });
+s.post([]{ /* 在前一个完成后运行 */ });
+
+// run_on：在协程中切换执行上下文
+co_await run_on(pool_exec);   // 切换到线程池
+// ... CPU 密集型工作 ...
+co_await run_on(ctx);         // 切换回 io_context
+
+// co_spawn：在指定 executor 上启动协程
+auto handle = co_spawn(pool_exec, compute());
+int result = co_await std::move(handle);
+
+// detach：在指定 executor 上 fire-and-forget
+detach(pool_exec, my_task());
+```
+
+### 定时调度
+
+周期性和延迟任务调度（类似 Java `ScheduledExecutorService`）。
+
+```cpp
+// sleep_for：协程中异步睡眠
+co_await sleep_for(std::chrono::seconds(1));
+co_await sleep_for(500ms, ctx);  // 显式指定 io_context
+
+// schedule_once：延迟执行任务（可取消）
+auto task = schedule_once(ctx, 500ms, my_task());
+task.cancel();  // 在触发前取消
+
+// schedule_at_fixed_rate：周期性执行（可取消）
+auto t = schedule_at_fixed_rate(ctx, 1s,
+    []{ return my_task(); }, 2s);  // 工厂函数：每次迭代创建新 Task
+t.cancel();  // 停止周期执行
+```
+
+### HTTP 服务器
+
+基于路由的 HTTP 服务器，支持 H1/H2/H3。
+
+```cpp
+http::server srv(ctx, 8080);
+
+srv.route(http::method::GET, "/hello", [](const http::request& req) -> Task<http::response> {
+    co_return http::response{200, "Hello, World!"};
+});
+
+// H2/H3 Server Push
+srv.set_push_provider([](const http::request& req) {
+    return std::vector<std::pair<http::request, http::response>>{
+        {{http::method::GET, "/style.css"}, {200, "body{}"}}
+    };
+});
+
+co_await srv.serve();
+// co_await srv.serve_h2(ssl_ctx);  // HTTP/2 + TLS
+```
+
+### HTTP 客户端
+
+基于 URL 的 HTTP 客户端，自动选择协议，支持连接池。
+
+```cpp
+http::client cli(ctx);
+auto resp = co_await cli.get("https://example.com/api/data");
+printf("Status: %d, Body: %s\n", resp.status_code, resp.body.c_str());
+
+// POST 请求
+auto resp2 = co_await cli.post("https://example.com/api/submit", "{\"key\":\"value\"}", "application/json");
 ```
 
 ## 平台支持

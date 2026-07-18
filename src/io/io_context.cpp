@@ -51,7 +51,27 @@ void io_context::run() {
     current_context_ = this;
 
     while (!stopped_.load(std::memory_order_relaxed)) {
-        backend_->poll(100);  // 100ms timeout
+        backend_->poll(next_timer_timeout_ms());
+        process_timers();
+        execute_pending();
+    }
+
+    current_context_ = prev;
+}
+
+void io_context::run_until_complete() {
+    auto prev = current_context_;
+    current_context_ = this;
+
+    while (!stopped_.load(std::memory_order_relaxed)) {
+        // Check if all work is done
+        if (work_count_.load(std::memory_order_relaxed) == 0) {
+            std::lock_guard<std::mutex> lock(pending_mutex_);
+            if (pending_.empty()) break;
+        }
+
+        backend_->poll(next_timer_timeout_ms());
+        process_timers();
         execute_pending();
     }
 
@@ -67,7 +87,8 @@ size_t io_context::run_one() {
     current_context_ = this;
 
     handlers_executed_ = 0;
-    backend_->poll(100);
+    backend_->poll(next_timer_timeout_ms());
+    process_timers();
     execute_pending();
 
     current_context_ = prev;
@@ -80,6 +101,7 @@ size_t io_context::poll() {
 
     handlers_executed_ = 0;
     backend_->poll(0);  // Non-blocking
+    process_timers();
     execute_pending();
 
     current_context_ = prev;
@@ -91,8 +113,51 @@ void io_context::stop() {
 }
 
 void io_context::post(std::function<void()> func) {
-    std::lock_guard<std::mutex> lock(pending_mutex_);
-    pending_.push(std::move(func));
+    {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        pending_.push(std::move(func));
+    }
+    // Wake up the event loop if it's blocked in poll()
+    backend_->wake();
+}
+
+void io_context::post_at(std::chrono::steady_clock::time_point deadline,
+                          std::function<void()> cb) {
+    {
+        std::lock_guard<std::mutex> lock(timers_mutex_);
+        timers_.push(TimerEntry{deadline, std::move(cb)});
+    }
+    backend_->wake();
+}
+
+void io_context::process_timers() {
+    auto now = std::chrono::steady_clock::now();
+    std::vector<std::function<void()>> expired;
+
+    {
+        std::lock_guard<std::mutex> lock(timers_mutex_);
+        while (!timers_.empty() && timers_.top().deadline <= now) {
+            expired.push_back(std::move(const_cast<TimerEntry&>(timers_.top()).callback));
+            timers_.pop();
+        }
+    }
+
+    for (auto& cb : expired) {
+        cb();
+        ++handlers_executed_;
+    }
+}
+
+int io_context::next_timer_timeout_ms() const {
+    std::lock_guard<std::mutex> lock(timers_mutex_);
+    if (timers_.empty()) return 100;  // default 100ms
+
+    auto now = std::chrono::steady_clock::now();
+    auto diff = timers_.top().deadline - now;
+    if (diff <= std::chrono::milliseconds::zero()) return 0;
+
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(diff).count();
+    return static_cast<int>(ms);
 }
 
 void io_context::execute_pending() {

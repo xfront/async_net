@@ -38,7 +38,7 @@ context::context(const char* method) {
         m = wolfDTLS_server_method();
     } else if (mstr == "dtls_client") {
         m = wolfDTLS_client_method();
-    } else if (mstr == "dtls") {
+    } else if (mstr == "dtls" || mstr == "dtls_peer") {
         m = wolfDTLS_method();
     } else {
         m = wolfSSLv23_method();

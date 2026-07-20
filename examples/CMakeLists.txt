@@ -39,6 +39,15 @@ if(ASYNC_NET_HAS_SSL)
 
     add_executable(dtls_multicast_receiver dtls_multicast_receiver.cpp)
     target_link_libraries(dtls_multicast_receiver PRIVATE async_net)
+
+    # P2P examples
+    if(ASYNC_NET_HAS_P2P)
+        add_executable(p2p_tracker p2p_tracker.cpp)
+        target_link_libraries(p2p_tracker PRIVATE async_net)
+
+        add_executable(p2p_chat p2p_chat.cpp)
+        target_link_libraries(p2p_chat PRIVATE async_net)
+    endif()
 endif()
 
 # HTTP examples

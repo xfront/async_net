@@ -4,30 +4,17 @@
 #include "ssl.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <sys/socket.h>
 
 namespace async_net {
 namespace net {
 
-/// Blocking DTLS stream over a raw UDP file descriptor.
-/// Wraps wolfSSL DTLS operations so that user code never touches wolfSSL directly.
-///
-/// Server usage:
-///   int fd = /* raw blocking UDP socket */;
-///   dtls_stream stream(fd, ctx, /*is_server=*/true);
-///   stream.set_peer_from_socket();   // peek client addr
-///   stream.handshake();
-///   stream.write(key, 32);
-///
-/// Client usage:
-///   int fd = /* raw connected UDP socket */;
-///   dtls_stream stream(fd, ctx, /*is_server=*/false);
-///   stream.handshake();
-///   stream.read(buf, 32);
+/// Non-blocking DTLS stream over a raw UDP file descriptor.
+/// Uses wolfSSL custom I/O callbacks to properly handle EAGAIN,
+/// enabling fully async operation without threads.
 class dtls_stream {
 public:
-    /// Construct a DTLS stream on an existing UDP file descriptor.
-    /// The fd must be a blocking socket suitable for DTLS I/O.
-    /// For server: the caller should call set_peer_from_socket() before handshake.
+    /// Construct a DTLS stream on a non-blocking UDP file descriptor.
     dtls_stream(int fd, ssl::context& ctx, bool is_server);
     ~dtls_stream();
 
@@ -37,34 +24,61 @@ public:
     dtls_stream(const dtls_stream&) = delete;
     dtls_stream& operator=(const dtls_stream&) = delete;
 
-    /// Perform DTLS handshake (blocking, with internal retransmission).
+    /// Begin DTLS handshake (sets connect/accept state).
+    void begin_handshake();
+
+    /// Perform one step of DTLS handshake.
+    /// Returns 0 on success, WOLFSSL_ERROR_WANT_READ/WANT_WRITE if needs I/O, other on error.
+    int handshake_step();
+
+    /// Blocking handshake with internal retry (for simple/multicast usage).
     /// Returns 0 on success, -1 on failure.
     int handshake();
 
-    /// Read exactly `len` bytes from the DTLS channel.
-    /// Returns number of bytes read, or -1 on error.
+    /// For server: detect the peer address from the next incoming UDP packet.
+    int set_peer_from_socket();
+
+    /// Non-blocking read. Returns bytes read, 0 if would block, -1 on error.
     int read(void* buf, size_t len);
 
-    /// Write `len` bytes to the DTLS channel.
-    /// Returns number of bytes written, or -1 on error.
+    /// Non-blocking write. Returns bytes written, 0 if would block, -1 on error.
     int write(const void* buf, size_t len);
 
     /// Send DTLS shutdown alert.
     void shutdown();
 
-    /// For server: detect the peer address from the next incoming UDP packet
-    /// on the underlying fd and configure the DTLS peer accordingly.
-    /// Must be called before handshake() on the server side.
-    /// Returns 0 on success, -1 on failure.
-    int set_peer_from_socket();
+    /// Explicitly set the DTLS peer address (for client).
+    int set_peer(const char* ip, uint16_t port);
 
     /// Get the underlying file descriptor.
     int fd() const { return fd_; }
 
+    /// Check if the last operation wants read.
+    bool wants_read() const { return last_want_read_; }
+
+    /// Check if the last operation wants write.
+    bool wants_write() const { return last_want_write_; }
+
 private:
+    // I/O context passed to wolfSSL custom callbacks
+    struct io_ctx {
+        int fd;
+        struct sockaddr_storage peer_addr;
+        socklen_t peer_addr_len;
+        bool has_peer_addr;
+    };
+
+    static int io_recv_callback(WOLFSSL* ssl, char* buf, int sz, void* ctx);
+    static int io_send_callback(WOLFSSL* ssl, char* buf, int sz, void* ctx);
+
+    void track_want(int err);
+
     int fd_ = -1;
-    void* ssl_ = nullptr;   // WOLFSSL* (opaque to avoid exposing wolfSSL headers)
+    void* ssl_ = nullptr;   // WOLFSSL*
+    io_ctx io_ctx_{};
     bool is_server_ = false;
+    bool last_want_read_ = false;
+    bool last_want_write_ = false;
 };
 
 } // namespace net

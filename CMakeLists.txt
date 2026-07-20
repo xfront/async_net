@@ -74,6 +74,18 @@ if(ASYNC_NET_WITH_SSL)
     endif()
 endif()
 
+# P2P support (requires SSL for DTLS peer connections)
+set(ASYNC_NET_HAS_P2P FALSE)
+if(ASYNC_NET_HAS_SSL)
+    list(APPEND ASYNC_NET_SOURCES
+        src/p2p/tracker_server.cpp
+        src/p2p/tracker_client.cpp
+        src/p2p/peer_connection.cpp
+    )
+    set(ASYNC_NET_HAS_P2P TRUE)
+    message(STATUS "P2P support: enabled")
+endif()
+
 # HTTP/2 support (self-contained implementation, no nghttp2 needed)
 if(ASYNC_NET_WITH_HTTP2)
     list(APPEND ASYNC_NET_SOURCES
@@ -108,6 +120,10 @@ target_include_directories(async_net PUBLIC include PRIVATE src)
 if(ASYNC_NET_HAS_SSL)
     target_compile_definitions(async_net PUBLIC ASYNC_NET_HAS_SSL=1)
     target_link_libraries(async_net PUBLIC wolfssl::wolfssl)
+endif()
+
+if(ASYNC_NET_HAS_P2P)
+    target_compile_definitions(async_net PUBLIC ASYNC_NET_HAS_P2P=1)
 endif()
 
 if(ASYNC_NET_HAS_HTTP2)

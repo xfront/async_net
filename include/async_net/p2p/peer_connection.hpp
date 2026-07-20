@@ -9,8 +9,7 @@
 #include <optional>
 #include <string>
 
-namespace async_net {
-namespace p2p {
+namespace async_net::p2p {
 
 /// P2P connection with UDP hole punching + DTLS encryption.
 ///
@@ -78,5 +77,4 @@ private:
     bool connected_ = false;
 };
 
-} // namespace p2p
-} // namespace async_net
+} // namespace async_net::p2p

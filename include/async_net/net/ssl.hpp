@@ -8,16 +8,14 @@
 #include <vector>
 #include <functional>
 
-// wolfSSL headers (replaces OpenSSL)
-#include <wolfssl/options.h>
-#include <wolfssl/ssl.h>
+// SSL backend headers are included only in implementation files.
+// Public API uses opaque void* handles to avoid backend dependency.
 
-namespace async_net {
-namespace ssl {
+namespace async_net::ssl {
 
 /// SSL/TLS context — holds certificates, keys, and configuration.
 /// Shared among multiple ssl::stream instances.
-/// Uses wolfSSL as the TLS backend.
+/// Backend: wolfSSL or AWS-LC (selected at compile time via ASYNC_NET_SSL_BACKEND).
 ///
 /// Supported methods:
 ///   "tls_server"  — TLS server
@@ -61,16 +59,15 @@ public:
     /// Set ALPN select callback (server side): returns selected protocol
     void set_alpn_select_cb(std::function<std::string(const std::vector<std::string>&)> cb);
 
-    /// Get the underlying WOLFSSL_CTX
-    WOLFSSL_CTX* native_handle() { return ctx_; }
+    /// Get the underlying SSL context handle (WOLFSSL_CTX* or SSL_CTX*)
+    void* native_handle() { return ctx_; }
 
 private:
-    WOLFSSL_CTX* ctx_ = nullptr;
+    void* ctx_ = nullptr;  // Backend-specific context handle
 };
 
 /// SSL/TLS stream — wraps a TCP socket with SSL encryption.
 /// Provides async handshake, read, write, and shutdown via coroutines.
-/// Uses wolfSSL as the TLS backend.
 class stream {
 public:
     /// Create an SSL stream over an existing TCP socket
@@ -102,14 +99,13 @@ public:
     tcp::socket& next_layer() { return *sock_; }
     const tcp::socket& next_layer() const { return *sock_; }
 
-    /// Get the underlying WOLFSSL object
-    WOLFSSL* native_handle() { return ssl_; }
+    /// Get the underlying SSL handle (WOLFSSL* or SSL*)
+    void* native_handle() { return ssl_; }
 
 private:
-    WOLFSSL* ssl_ = nullptr;
+    void* ssl_ = nullptr;  // Backend-specific SSL handle
     tcp::socket* sock_ = nullptr;
     bool is_server_ = false;
 };
 
-} // namespace ssl
-} // namespace async_net
+} // namespace async_net::ssl

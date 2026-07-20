@@ -7,11 +7,10 @@
 #include <optional>
 #include <string>
 
-namespace async_net {
-namespace crypto {
+namespace async_net::crypto {
 
 /// AES-256-GCM authenticated encryption.
-/// Uses wolfSSL wolfcrypt as the backend.
+/// Backend is selected at build time (wolfSSL / AWS-LC / LibreSSL).
 ///
 /// Wire format: [ciphertext...][16-byte GCM tag]
 /// The caller provides key (32 bytes), iv/nonce (12 bytes),
@@ -39,9 +38,8 @@ public:
         const uint8_t* ciphertext, size_t len,
         const uint8_t* aad = nullptr, size_t aad_len = 0);
 
-    /// Generate random bytes (uses wolfSSL RNG).
+    /// Generate random bytes (uses crypto backend RNG).
     static std::vector<uint8_t> random_bytes(size_t len);
 };
 
-} // namespace crypto
-} // namespace async_net
+} // namespace async_net::crypto

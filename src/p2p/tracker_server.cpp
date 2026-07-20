@@ -6,8 +6,7 @@
 #include <sstream>
 #include <arpa/inet.h>
 
-namespace async_net {
-namespace p2p {
+namespace async_net::p2p {
 
 tracker_server::tracker_server(io_context& ctx, uint16_t port)
     : ctx_(&ctx) {
@@ -236,5 +235,4 @@ Task<void> tracker_server::handle_client(tcp::socket sock) {
     }
 }
 
-} // namespace p2p
-} // namespace async_net
+} // namespace async_net::p2p

@@ -7,8 +7,7 @@
 #include <algorithm>
 #include <map>
 
-namespace async_net {
-namespace http {
+namespace async_net::http {
 
 // ============================================================================
 // Internal implementation (pimpl)
@@ -807,5 +806,5 @@ void http2_session::set_push_handler(push_handler handler) {
     impl_->push_handler_ = std::move(handler);
 }
 
-} // namespace http
-} // namespace async_net
+} // namespace async_net::http
+

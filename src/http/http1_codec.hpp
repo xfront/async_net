@@ -5,8 +5,7 @@
 #include <string>
 #include <string_view>
 
-namespace async_net {
-namespace http {
+namespace async_net::http {
 
 // Result of a parse attempt
 enum class parse_status {
@@ -55,5 +54,4 @@ private:
     static body_result parse_body(const std::string& data, const headers& hdrs);
 };
 
-} // namespace http
-} // namespace async_net
+} // namespace async_net::http

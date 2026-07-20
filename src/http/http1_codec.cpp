@@ -3,8 +3,7 @@
 #include <stdexcept>
 #include <cstring>
 
-namespace async_net {
-namespace http {
+namespace async_net::http {
 
 // ---------------------------------------------------------------------------
 // Find \r\n\r\n
@@ -43,6 +42,10 @@ void http1_codec::parse_header_lines(const std::string& block, headers& hdrs) {
 
         std::string name = line.substr(0, colon);
         std::string value = line.substr(colon + 1);
+
+        // Trim trailing whitespace from name (some servers add space before colon)
+        while (!name.empty() && (name.back() == ' ' || name.back() == '\t'))
+            name.pop_back();
 
         // Trim leading whitespace from value
         size_t start = 0;
@@ -292,5 +295,4 @@ std::string http1_codec::serialize(const response& resp) {
     return result;
 }
 
-} // namespace http
-} // namespace async_net
+} // namespace async_net::http

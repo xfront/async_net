@@ -12,8 +12,7 @@
 #include <string>
 #include <vector>
 
-namespace async_net {
-namespace p2p {
+namespace async_net::p2p {
 
 /// P2P Tracker Server — central rendezvous point for peer discovery.
 ///
@@ -73,5 +72,4 @@ private:
     std::chrono::seconds peer_timeout_{60};
 };
 
-} // namespace p2p
-} // namespace async_net
+} // namespace async_net::p2p

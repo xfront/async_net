@@ -2,8 +2,7 @@
 #include "../../include/async_net/net/buffer.hpp"
 #include <sstream>
 
-namespace async_net {
-namespace p2p {
+namespace async_net::p2p {
 
 tracker_client::tracker_client(io_context& ctx)
     : ctx_(&ctx), sock_(ctx) {}
@@ -119,5 +118,4 @@ Task<bool> tracker_client::write_line(const std::string& line) {
     co_return n == data.size();
 }
 
-} // namespace p2p
-} // namespace async_net
+} // namespace async_net::p2p

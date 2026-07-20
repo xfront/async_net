@@ -1,13 +1,12 @@
-// HTTP/3 Session implementation — wolfSSL + ngtcp2 + self-contained QPACK/H3
+#include <arpa/inet.h>
+
+// HTTP/3 Session implementation — ngtcp2 + self-contained QPACK/H3
 extern "C" {
 #include <ngtcp2/ngtcp2.h>
 #include <ngtcp2/ngtcp2_crypto.h>
-#include <ngtcp2/ngtcp2_crypto_wolfssl.h>
 }
 
-#include <wolfssl/options.h>
-#include <wolfssl/ssl.h>
-#include <wolfssl/quic.h>
+#include "../security/h3_quic_backend.hpp"
 
 #include <async_net/http/http3_session.hpp>
 #include "h3_frame.hpp"
@@ -20,8 +19,8 @@ extern "C" {
 #include <ctime>
 #include <netdb.h>
 
-namespace async_net {
-namespace http {
+
+namespace async_net::http {
 
 // ============================================================================
 // Utility: generate random bytes
@@ -132,102 +131,6 @@ static int cb_recv_rx_key(ngtcp2_conn* conn, ngtcp2_encryption_level level,
     return 0;
 }
 
-// Decrypt callback — wolfSSL QUIC AEAD decrypt
-static int custom_decrypt_cb(uint8_t *dest, const ngtcp2_crypto_aead *aead,
-                              const ngtcp2_crypto_aead_ctx *aead_ctx,
-                              const uint8_t *ciphertext, size_t ciphertextlen,
-                              const uint8_t *nonce, size_t noncelen,
-                              const uint8_t *aad, size_t aadlen) {
-    (void)aead; (void)noncelen;
-    if (wolfSSL_quic_aead_decrypt(dest, static_cast<WOLFSSL_EVP_CIPHER_CTX*>(aead_ctx->native_handle),
-                                   ciphertext, ciphertextlen,
-                                   nonce, aad, aadlen) != WOLFSSL_SUCCESS) {
-        return -1;
-    }
-    return 0;
-}
-
-// Encrypt callback — wolfSSL QUIC AEAD encrypt
-static int custom_encrypt_cb(uint8_t *dest, const ngtcp2_crypto_aead *aead,
-                              const ngtcp2_crypto_aead_ctx *aead_ctx,
-                              const uint8_t *plaintext, size_t plaintextlen,
-                              const uint8_t *nonce, size_t noncelen,
-                              const uint8_t *aad, size_t aadlen) {
-    (void)aead; (void)noncelen;
-    if (wolfSSL_quic_aead_encrypt(dest, static_cast<WOLFSSL_EVP_CIPHER_CTX*>(aead_ctx->native_handle),
-                                   plaintext, plaintextlen,
-                                   nonce, aad, aadlen) != WOLFSSL_SUCCESS) {
-        return -1;
-    }
-    return 0;
-}
-
-// Custom QUIC method — intercepts set_encryption_secrets for debugging,
-// and delegates to ngtcp2_crypto functions.
-static ngtcp2_encryption_level wolfssl_to_ngtcp2_level(WOLFSSL_ENCRYPTION_LEVEL lvl) {
-    switch (lvl) {
-        case wolfssl_encryption_initial:     return NGTCP2_ENCRYPTION_LEVEL_INITIAL;
-        case wolfssl_encryption_early_data:  return NGTCP2_ENCRYPTION_LEVEL_0RTT;
-        case wolfssl_encryption_handshake:   return NGTCP2_ENCRYPTION_LEVEL_HANDSHAKE;
-        case wolfssl_encryption_application: return NGTCP2_ENCRYPTION_LEVEL_1RTT;
-        default: return NGTCP2_ENCRYPTION_LEVEL_1RTT;
-    }
-}
-
-static int quic_set_encryption_secrets(WOLFSSL* ssl, WOLFSSL_ENCRYPTION_LEVEL level,
-                                        const uint8_t* read_secret,
-                                        const uint8_t* write_secret,
-                                        size_t secret_len) {
-    auto* ref = static_cast<ngtcp2_crypto_conn_ref*>(wolfSSL_get_app_data(ssl));
-    if (!ref) return 0;
-    ngtcp2_conn* conn = ref->get_conn(ref);
-    if (!conn) return 0;
-
-    auto ngtcp2_level = wolfssl_to_ngtcp2_level(level);
-
-    if (read_secret) {
-        auto rv = ngtcp2_crypto_derive_and_install_rx_key(
-                conn, nullptr, nullptr, nullptr,
-                ngtcp2_level, read_secret, secret_len);
-        if (rv != 0) return -1;
-    }
-    if (write_secret) {
-        auto rv = ngtcp2_crypto_derive_and_install_tx_key(
-                conn, nullptr, nullptr, nullptr,
-                ngtcp2_level, write_secret, secret_len);
-        if (rv != 0) return -1;
-    }
-    return 1; // success
-}
-
-static int quic_add_handshake_data(WOLFSSL* ssl, WOLFSSL_ENCRYPTION_LEVEL level,
-                                    const uint8_t* data, size_t len) {
-    auto* ref = static_cast<ngtcp2_crypto_conn_ref*>(wolfSSL_get_app_data(ssl));
-    if (!ref) return 0;
-    ngtcp2_conn* conn = ref->get_conn(ref);
-    if (!conn) return 0;
-    auto rv = ngtcp2_conn_submit_crypto_data(conn, wolfssl_to_ngtcp2_level(level), data, len);
-    if (rv != 0) {
-        std::cerr << "[QUIC] submit_crypto_data err=" << ngtcp2_strerror(rv) << std::endl;
-        return 0;
-    }
-    return 1;
-}
-
-static int quic_flush_flight(WOLFSSL*) { return 1; }
-
-static int quic_send_alert(WOLFSSL* ssl, WOLFSSL_ENCRYPTION_LEVEL level, uint8_t alert) {
-    (void)ssl; (void)level; (void)alert;
-    return 1;
-}
-
-static const WOLFSSL_QUIC_METHOD g_quic_method = {
-    quic_set_encryption_secrets,
-    quic_add_handshake_data,
-    quic_flush_flight,
-    quic_send_alert
-};
-
 // ============================================================================
 // Internal implementation (pimpl)
 // ============================================================================
@@ -271,8 +174,8 @@ struct http3_session::impl {
     bool handshake_done_ = false;
 
     ngtcp2_conn* conn_ = nullptr;
-    WOLFSSL_CTX* ssl_ctx_ = nullptr;
-    WOLFSSL* ssl_ = nullptr;
+    quic_ssl::ssl_ctx_handle* ssl_ctx_ = nullptr;
+    quic_ssl::ssl_handle* ssl_ = nullptr;
     ngtcp2_crypto_conn_ref conn_ref_{};
 
     std::vector<std::string> output_pkts_;  // Each entry = one UDP datagram
@@ -310,14 +213,10 @@ struct http3_session::impl {
             ngtcp2_conn_del(conn_);
             conn_ = nullptr;
         }
-        if (ssl_) {
-            wolfSSL_free(ssl_);
-            ssl_ = nullptr;
-        }
-        if (ssl_ctx_) {
-            wolfSSL_CTX_free(ssl_ctx_);
-            ssl_ctx_ = nullptr;
-        }
+        quic_ssl::ssl_free(ssl_);
+        ssl_ = nullptr;
+        quic_ssl::ctx_free(ssl_ctx_);
+        ssl_ctx_ = nullptr;
     }
 
     int init_server(const uint8_t* dcid_data, size_t dcid_len,
@@ -581,56 +480,33 @@ int http3_session::impl::init_server(
     const ::sockaddr* remote_addr, ::socklen_t remote_addrlen,
     uint32_t version) {
 
-    // Initialize wolfSSL
-    wolfSSL_Init();
-
-    // Create SSL context with QUIC support
-    ssl_ctx_ = wolfSSL_CTX_new(wolfTLSv1_3_server_method());
+    // Initialize SSL backend
+    ssl_ctx_ = quic_ssl::ctx_new_server();
     if (!ssl_ctx_) {
-        std::cerr << "[H3] wolfSSL_CTX_new failed" << std::endl;
+        std::cerr << "[H3] ctx_new_server failed" << std::endl;
         return -1;
     }
 
-    // Configure for TLS 1.3 (QUIC requires TLS 1.3)
-    wolfSSL_CTX_set_min_proto_version(ssl_ctx_, TLS1_3_VERSION);
-    wolfSSL_CTX_set_max_proto_version(ssl_ctx_, TLS1_3_VERSION);
-
     if (!config_.cert_file.empty()) {
-        if (wolfSSL_CTX_use_certificate_chain_file(ssl_ctx_, config_.cert_file.c_str()) != 1) {
+        if (!quic_ssl::ctx_use_cert(ssl_ctx_, config_.cert_file.c_str())) {
             std::cerr << "[H3] Failed to load certificate: " << config_.cert_file << std::endl;
             return -1;
         }
     }
     if (!config_.key_file.empty()) {
-        if (wolfSSL_CTX_use_PrivateKey_file(ssl_ctx_, config_.key_file.c_str(),
-                                             SSL_FILETYPE_PEM) != 1) {
+        if (!quic_ssl::ctx_use_key(ssl_ctx_, config_.key_file.c_str())) {
             std::cerr << "[H3] Failed to load private key: " << config_.key_file << std::endl;
             return -1;
         }
     }
 
     // Set ALPN for h3
-    wolfSSL_CTX_set_alpn_select_cb(ssl_ctx_,
-        [](WOLFSSL* ssl, const unsigned char** out, unsigned char* outlen,
-           const unsigned char* in, unsigned int inlen, void* arg) -> int {
-            // Look for "h3" in ALPN
-            for (unsigned int i = 0; i < inlen; ) {
-                uint8_t len = in[i];
-                if (i + 1 + len > inlen) break;
-                if (len == 2 && memcmp(in + i + 1, "h3", 2) == 0) {
-                    *out = in + i + 1;
-                    *outlen = 2;
-                    return 0;
-                }
-                i += 1 + len;
-            }
-            return 1; // No match
-        }, nullptr);
+    quic_ssl::ctx_set_alpn_select_h3_server(ssl_ctx_);
 
     // Create SSL object
-    ssl_ = wolfSSL_new(ssl_ctx_);
+    ssl_ = quic_ssl::ssl_new(ssl_ctx_);
     if (!ssl_) {
-        std::cerr << "[H3] wolfSSL_new failed" << std::endl;
+        std::cerr << "[H3] SSL_new failed" << std::endl;
         return -1;
     }
 
@@ -639,8 +515,8 @@ int http3_session::impl::init_server(
     callbacks.recv_client_initial = ngtcp2_crypto_recv_client_initial_cb;
     callbacks.recv_crypto_data = cb_recv_crypto_data;
     callbacks.handshake_completed = cb_handshake_completed;
-    callbacks.encrypt = custom_encrypt_cb;
-    callbacks.decrypt = custom_decrypt_cb;
+    callbacks.encrypt = quic_ssl::encrypt_cb;
+    callbacks.decrypt = quic_ssl::decrypt_cb;
     callbacks.hp_mask = ngtcp2_crypto_hp_mask_cb;
     callbacks.recv_stream_data = cb_recv_stream_data;
     callbacks.acked_stream_data_offset = cb_acked_stream_data_offset;
@@ -703,7 +579,7 @@ int http3_session::impl::init_server(
     }
 
     // Set TLS handle BEFORE setting transport params
-    ngtcp2_conn_set_tls_native_handle(conn_, ssl_);
+    ngtcp2_conn_set_tls_native_handle(conn_, quic_ssl::ssl_native_handle(ssl_));
 
     // Set conn_ref as app data so ngtcp2 QUIC method callbacks can find the conn
     conn_ref_.get_conn = [](ngtcp2_crypto_conn_ref* ref) -> ngtcp2_conn* {
@@ -712,10 +588,7 @@ int http3_session::impl::init_server(
         return self->conn_;
     };
     conn_ref_.user_data = this;
-    wolfSSL_set_app_data(ssl_, &conn_ref_);
-
-    // Install our custom QUIC method for detailed logging
-    wolfSSL_set_quic_method(ssl_, &g_quic_method);
+    quic_ssl::ssl_set_quic(ssl_, &conn_ref_);
 
     // Set transport params on ngtcp2 conn
     ngtcp2_conn_set_local_transport_params(conn_, &params);
@@ -730,30 +603,19 @@ int http3_session::impl::init_client(
     const ::sockaddr* remote_addr, ::socklen_t remote_addrlen,
     uint32_t version) {
 
-    wolfSSL_Init();
-
-    // Create TLS 1.3 client context
-    ssl_ctx_ = wolfSSL_CTX_new(wolfTLSv1_3_client_method());
+    ssl_ctx_ = quic_ssl::ctx_new_client();
     if (!ssl_ctx_) {
-        std::cerr << "[H3] client: wolfSSL_CTX_new failed" << std::endl;
+        std::cerr << "[H3] client: SSL_CTX_new failed" << std::endl;
         return -1;
     }
 
-    // Configure for TLS 1.3 (QUIC requires TLS 1.3)
-    wolfSSL_CTX_set_min_proto_version(ssl_ctx_, TLS1_3_VERSION);
-    wolfSSL_CTX_set_max_proto_version(ssl_ctx_, TLS1_3_VERSION);
-
-    // Disable certificate verification (self-signed certs)
-    wolfSSL_CTX_set_verify(ssl_ctx_, SSL_VERIFY_NONE, nullptr);
-
-    // Set ALPN to "h3" (client side)
-    const unsigned char alpn_h3[] = {2, 'h', '3'};
-    wolfSSL_CTX_set_alpn_protos(ssl_ctx_, alpn_h3, sizeof(alpn_h3));
+    quic_ssl::ctx_set_verify_none(ssl_ctx_);
+    quic_ssl::ctx_set_alpn_h3_client(ssl_ctx_);
 
     // Create SSL object
-    ssl_ = wolfSSL_new(ssl_ctx_);
+    ssl_ = quic_ssl::ssl_new(ssl_ctx_);
     if (!ssl_) {
-        std::cerr << "[H3] client: wolfSSL_new failed" << std::endl;
+        std::cerr << "[H3] client: SSL_new failed" << std::endl;
         return -1;
     }
 
@@ -774,8 +636,8 @@ int http3_session::impl::init_client(
     callbacks.client_initial = ngtcp2_crypto_client_initial_cb;
     callbacks.recv_crypto_data = cb_recv_crypto_data;
     callbacks.handshake_completed = cb_handshake_completed;
-    callbacks.encrypt = custom_encrypt_cb;
-    callbacks.decrypt = custom_decrypt_cb;
+    callbacks.encrypt = quic_ssl::encrypt_cb;
+    callbacks.decrypt = quic_ssl::decrypt_cb;
     callbacks.hp_mask = ngtcp2_crypto_hp_mask_cb;
     callbacks.recv_stream_data = cb_recv_stream_data;
     callbacks.acked_stream_data_offset = cb_acked_stream_data_offset;
@@ -834,7 +696,7 @@ int http3_session::impl::init_client(
         return -1;
     }
 
-    ngtcp2_conn_set_tls_native_handle(conn_, ssl_);
+    ngtcp2_conn_set_tls_native_handle(conn_, quic_ssl::ssl_native_handle(ssl_));
 
     // Set conn_ref as app data so ngtcp2 QUIC method callbacks can find the conn
     conn_ref_.get_conn = [](ngtcp2_crypto_conn_ref* ref) -> ngtcp2_conn* {
@@ -843,10 +705,7 @@ int http3_session::impl::init_client(
         return self->conn_;
     };
     conn_ref_.user_data = this;
-    wolfSSL_set_app_data(ssl_, &conn_ref_);
-
-    // Install our custom QUIC method
-    wolfSSL_set_quic_method(ssl_, &g_quic_method);
+    quic_ssl::ssl_set_quic(ssl_, &conn_ref_);
 
     // Generate initial Client Hello packet
     write_packets();
@@ -1215,6 +1074,14 @@ http3_session::~http3_session() = default;
 http3_session::http3_session(http3_session&&) noexcept = default;
 http3_session& http3_session::operator=(http3_session&&) noexcept = default;
 
+// Static secret for Retry token generation (server-side)
+static const uint8_t s_token_secret[] = {
+    0x61, 0x73, 0x79, 0x6e, 0x63, 0x5f, 0x6e, 0x65,
+    0x74, 0x5f, 0x68, 0x33, 0x5f, 0x72, 0x65, 0x74,
+    0x72, 0x79, 0x5f, 0x73, 0x65, 0x63, 0x72, 0x65,
+    0x74, 0x5f, 0x6b, 0x65, 0x79, 0x32, 0x30, 0x32
+}; // "async_net_h3_retry_secret_key202"
+
 ssize_t http3_session::feed_packet(const uint8_t* data, size_t len,
                                     const ::sockaddr* local_addr, ::socklen_t local_addrlen,
                                     const ::sockaddr* remote_addr, ::socklen_t remote_addrlen) {
@@ -1233,6 +1100,63 @@ ssize_t http3_session::feed_packet(const uint8_t* data, size_t len,
 
     auto rv = ngtcp2_conn_read_pkt(impl_->conn_, &path, &pi, data, len,
                                    now_ms() * 1000000ULL);
+    if (rv == NGTCP2_ERR_RETRY) {
+        // ngtcp2 requires address validation via Retry packet.
+        // Parse the client's Initial packet to extract CIDs and version.
+        if (len >= 5 && (data[0] & 0x80) != 0) {
+            uint32_t version = (static_cast<uint32_t>(data[1]) << 24) |
+                               (static_cast<uint32_t>(data[2]) << 16) |
+                               (static_cast<uint32_t>(data[3]) << 8) |
+                               static_cast<uint32_t>(data[4]);
+            size_t offset = 5;
+            uint8_t dcid_len = (offset < len) ? data[offset++] : 0;
+            if (offset + dcid_len > len) dcid_len = 0;
+            const uint8_t* dcid_data = data + offset;
+            offset += dcid_len;
+            uint8_t scid_len = (offset < len) ? data[offset++] : 0;
+            if (offset + scid_len > len) scid_len = 0;
+            const uint8_t* scid_data = data + offset;
+
+            ngtcp2_cid odcid, client_scid, retry_scid;
+            ngtcp2_cid_init(&odcid, dcid_data, dcid_len);
+            ngtcp2_cid_init(&client_scid, scid_data, scid_len);
+
+            // Generate a random server SCID for Retry
+            uint8_t retry_scid_buf[NGTCP2_MAX_CIDLEN];
+            size_t retry_scid_len = std::max<size_t>(8, dcid_len);
+            if (retry_scid_len > NGTCP2_MAX_CIDLEN) retry_scid_len = NGTCP2_MAX_CIDLEN;
+            gen_random(retry_scid_buf, retry_scid_len);
+            ngtcp2_cid_init(&retry_scid, retry_scid_buf, retry_scid_len);
+
+            // Generate retry token
+            uint8_t token_buf[NGTCP2_CRYPTO_MAX_RETRY_TOKENLEN];
+            ngtcp2_ssize tokenlen = ngtcp2_crypto_generate_retry_token(
+                token_buf, s_token_secret, sizeof(s_token_secret),
+                version, remote_addr, remote_addrlen,
+                &retry_scid, &odcid, now_ms());
+
+            if (tokenlen > 0) {
+                // Build Retry packet
+                uint8_t retry_buf[1500];
+                ngtcp2_ssize retry_len = ngtcp2_crypto_write_retry(
+                    retry_buf, sizeof(retry_buf), version,
+                    &client_scid,    // DCID in Retry = client's SCID
+                    &retry_scid,     // SCID in Retry = server's new SCID
+                    &odcid,          // Original DCID = client's Initial DCID
+                    token_buf, static_cast<size_t>(tokenlen));
+
+                if (retry_len > 0) {
+                    impl_->output_pkts_.emplace_back(
+                        reinterpret_cast<const char*>(retry_buf),
+                        static_cast<size_t>(retry_len));
+                }
+            }
+        }
+        // Connection is done — Retry sent, client must reconnect with token
+        impl_->alive_ = false;
+        return static_cast<ssize_t>(len);
+    }
+
     if (rv != 0) {
         std::cerr << "[H3 feed_pkt] err=" << ngtcp2_strerror(rv) << std::endl;
         impl_->alive_ = false;
@@ -1746,5 +1670,5 @@ int64_t http3_session::impl::do_submit_push(const request& promised_req,
     return static_cast<int64_t>(push_id);
 }
 
-} // namespace http
-} // namespace async_net
+} // namespace async_net::http
+

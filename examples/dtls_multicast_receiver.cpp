@@ -10,7 +10,7 @@
 //   group:       multicast group address  (default 239.0.0.1)
 //   data_port:   UDP port for multicast   (default 5000)
 //   control_port: DTLS port for key exchange (default 5001)
-//   ca_cert:     CA certificate to verify sender (default examples/server_cert.pem)
+//   ca_cert:     CA certificate to verify sender (default server_cert.pem)
 
 #ifdef ASYNC_NET_HAS_SSL
 
@@ -174,7 +174,7 @@ int main(int argc, char* argv[]) {
     const char* group = (argc > 1) ? argv[1] : "239.0.0.1";
     uint16_t data_port = (argc > 2) ? static_cast<uint16_t>(atoi(argv[2])) : 5000;
     uint16_t control_port = (argc > 3) ? static_cast<uint16_t>(atoi(argv[3])) : 5001;
-    const char* ca_cert = (argc > 4) ? argv[4] : "examples/server_cert.pem";
+    const char* ca_cert = (argc > 4) ? argv[4] : "server_cert.pem";
 
     try {
         io_context ctx;

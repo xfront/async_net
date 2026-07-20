@@ -8,8 +8,7 @@
 #include <cstring>
 #include <cerrno>
 
-namespace async_net {
-namespace p2p {
+namespace async_net::p2p {
 
 peer_connection::peer_connection(io_context& ctx, ssl::context& dtls_ctx)
     : ctx_(&ctx), dtls_ctx_(dtls_ctx) {}
@@ -244,5 +243,4 @@ void peer_connection::close() {
     connected_ = false;
 }
 
-} // namespace p2p
-} // namespace async_net
+} // namespace async_net::p2p

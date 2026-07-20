@@ -6,12 +6,13 @@
 #include <cstdint>
 #include <sys/socket.h>
 
-namespace async_net {
-namespace net {
+namespace async_net::net {
+
+namespace dtls_backend { struct dtls_handle; }
 
 /// Non-blocking DTLS stream over a raw UDP file descriptor.
-/// Uses wolfSSL custom I/O callbacks to properly handle EAGAIN,
-/// enabling fully async operation without threads.
+/// Uses backend-specific I/O mechanisms (wolfSSL custom callbacks or AWS-LC BIO)
+/// to properly handle EAGAIN, enabling fully async operation without threads.
 class dtls_stream {
 public:
     /// Construct a DTLS stream on a non-blocking UDP file descriptor.
@@ -28,7 +29,7 @@ public:
     void begin_handshake();
 
     /// Perform one step of DTLS handshake.
-    /// Returns 0 on success, WOLFSSL_ERROR_WANT_READ/WANT_WRITE if needs I/O, other on error.
+    /// Returns 0 on success, WANT_READ/WANT_WRITE if needs I/O, other on error.
     int handshake_step();
 
     /// Blocking handshake with internal retry (for simple/multicast usage).
@@ -54,32 +55,15 @@ public:
     int fd() const { return fd_; }
 
     /// Check if the last operation wants read.
-    bool wants_read() const { return last_want_read_; }
+    bool wants_read() const;
 
     /// Check if the last operation wants write.
-    bool wants_write() const { return last_want_write_; }
+    bool wants_write() const;
 
 private:
-    // I/O context passed to wolfSSL custom callbacks
-    struct io_ctx {
-        int fd;
-        struct sockaddr_storage peer_addr;
-        socklen_t peer_addr_len;
-        bool has_peer_addr;
-    };
-
-    static int io_recv_callback(WOLFSSL* ssl, char* buf, int sz, void* ctx);
-    static int io_send_callback(WOLFSSL* ssl, char* buf, int sz, void* ctx);
-
-    void track_want(int err);
-
     int fd_ = -1;
-    void* ssl_ = nullptr;   // WOLFSSL*
-    io_ctx io_ctx_{};
     bool is_server_ = false;
-    bool last_want_read_ = false;
-    bool last_want_write_ = false;
+    dtls_backend::dtls_handle* handle_ = nullptr;
 };
 
-} // namespace net
-} // namespace async_net
+} // namespace async_net::net

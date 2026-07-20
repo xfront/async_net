@@ -11,8 +11,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace async_net {
-namespace http {
+namespace async_net::http {
 
 // ---------------------------------------------------------------------------
 // HTTP Method
@@ -457,5 +456,4 @@ inline response response_internal_error(std::string msg = "Internal Server Error
     return response_builder().status(status_code::internal_error()).body(std::move(msg)).build();
 }
 
-} // namespace http
-} // namespace async_net
+} // namespace async_net::http

@@ -2,8 +2,13 @@
 #include "../http/http1_codec.hpp"
 #include <iostream>
 
-namespace async_net {
-namespace http {
+#ifdef ASYNC_NET_HAS_HTTP3
+#include <async_net/http/http3_session.hpp>
+#include <async_net/net/udp.hpp>
+#include <arpa/inet.h>
+#endif
+
+namespace async_net::http {
 
 // ---------------------------------------------------------------------------
 // Constructors / Destructor
@@ -46,6 +51,9 @@ void client::close_idle_connections() {
 #ifdef ASYNC_NET_HAS_SSL
     h2_pool_.clear();
 #endif
+#ifdef ASYNC_NET_HAS_HTTP3
+    h3_pool_.clear();
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -62,6 +70,11 @@ Task<response> client::get(const std::string& url) {
         .header("User-Agent", "async_net/1.0")
         .build();
 
+#ifdef ASYNC_NET_HAS_HTTP3
+    if (u.scheme() == "h3") {
+        co_return co_await send_h3(u.host(), u.port(), std::move(req));
+    }
+#endif
     co_return co_await send(u.host(), u.port(), std::move(req), u.is_https());
 }
 
@@ -78,6 +91,11 @@ Task<response> client::post(const std::string& url, std::string body_text,
         .body(std::move(body_text))
         .build();
 
+#ifdef ASYNC_NET_HAS_HTTP3
+    if (u.scheme() == "h3") {
+        co_return co_await send_h3(u.host(), u.port(), std::move(req));
+    }
+#endif
     co_return co_await send(u.host(), u.port(), std::move(req), u.is_https());
 }
 
@@ -94,6 +112,11 @@ Task<response> client::put(const std::string& url, std::string body_text,
         .body(std::move(body_text))
         .build();
 
+#ifdef ASYNC_NET_HAS_HTTP3
+    if (u.scheme() == "h3") {
+        co_return co_await send_h3(u.host(), u.port(), std::move(req));
+    }
+#endif
     co_return co_await send(u.host(), u.port(), std::move(req), u.is_https());
 }
 
@@ -107,6 +130,11 @@ Task<response> client::delete_(const std::string& url) {
         .header("User-Agent", "async_net/1.0")
         .build();
 
+#ifdef ASYNC_NET_HAS_HTTP3
+    if (u.scheme() == "h3") {
+        co_return co_await send_h3(u.host(), u.port(), std::move(req));
+    }
+#endif
     co_return co_await send(u.host(), u.port(), std::move(req), u.is_https());
 }
 
@@ -534,5 +562,191 @@ Task<std::optional<response>> client::read_response_ssl(ssl::stream& stream) {
 }
 #endif
 
-} // namespace http
-} // namespace async_net
+// ---------------------------------------------------------------------------
+// send_h3() — HTTP/3 over QUIC/UDP
+// ---------------------------------------------------------------------------
+
+#ifdef ASYNC_NET_HAS_HTTP3
+Task<response> client::send_h3(const std::string& host, uint16_t port, request req) {
+    std::string key = pool_key(host, port, true);
+
+    // Ensure Host/:authority headers
+    if (!req.hdrs.contains("Host")) {
+        req.hdrs.set("Host", host);
+    }
+    if (!req.hdrs.contains(":authority")) {
+        req.hdrs.set(":authority", host);
+    }
+    req.ver = version::HTTP_3;
+
+    // Try reusing an H3 session from pool
+    {
+        auto it = h3_pool_.find(key);
+        while (it != h3_pool_.end() && !it->second.empty()) {
+            auto h3 = std::move(it->second.back());
+            it->second.pop_back();
+            if (it->second.empty()) h3_pool_.erase(it);
+
+            if (!h3->session || !h3->session->is_alive()) continue;
+
+            // Submit request on existing session
+            auto promise = std::make_shared<http3_session::response_promise>();
+            h3->session->submit_request(req, promise);
+
+            auto send_fn = [&sock = *h3->sock, &remote_ep = h3->remote_ep](const uint8_t* data, size_t len) -> Task<ssize_t> {
+                co_return sock.send_to(const_buffer(data, len), remote_ep);
+            };
+            co_await h3->session->flush(send_fn);
+
+            // Read loop
+            char buf[4096];
+            udp::endpoint from;
+            struct sockaddr_in local_addr{};
+            local_addr.sin_family = AF_INET;
+            local_addr.sin_addr.s_addr = INADDR_ANY;
+            local_addr.sin_port = 0;
+
+            int max_rounds = 200;
+            int idle_rounds = 0;
+            while (!promise->complete && h3->session->is_alive() && max_rounds-- > 0) {
+                auto n = co_await h3->sock->async_receive_from(
+                    mutable_buffer(buf, sizeof(buf)), from);
+                if (n <= 0) {
+                    idle_rounds++;
+                    if (idle_rounds > 10) break;
+                    h3->session->handle_expiry();
+                    auto pkts = h3->session->get_pending_packets();
+                    for (auto& pkt : pkts) {
+                        if (!pkt.empty()) h3->sock->send_to(const_buffer(pkt.data(), pkt.size()), h3->remote_ep);
+                    }
+                    continue;
+                }
+                idle_rounds = 0;
+                h3->session->feed_packet(
+                    reinterpret_cast<const uint8_t*>(buf), static_cast<size_t>(n),
+                    reinterpret_cast<const struct sockaddr*>(&local_addr), sizeof(local_addr),
+                    h3->remote_ep.sockaddr_ptr(), h3->remote_ep.size());
+                auto pkts = h3->session->get_pending_packets();
+                for (auto& pkt : pkts) {
+                    if (!pkt.empty()) h3->sock->send_to(const_buffer(pkt.data(), pkt.size()), h3->remote_ep);
+                }
+                h3->session->handle_expiry();
+            }
+
+            if (promise->complete && !promise->error) {
+                response resp = std::move(promise->resp);
+                resp.ver = version::HTTP_3;
+                // Return to pool if session still alive
+                if (h3->session->is_alive()) {
+                    h3_pool_[key].push_back(std::move(h3));
+                }
+                co_return resp;
+            }
+        }
+    }
+
+    // Create new H3 connection
+    {
+        auto h3 = std::make_unique<h3_conn>();
+        h3->sock = std::make_unique<udp::socket>(ctx_);
+        h3->remote_ep = udp::endpoint(port, host.c_str());
+
+        // Bind to ephemeral port so we can receive responses
+        struct sockaddr_in bind_addr{};
+        bind_addr.sin_family = AF_INET;
+        bind_addr.sin_addr.s_addr = INADDR_ANY;
+        bind_addr.sin_port = 0;
+        ::bind(h3->sock->native_handle(),
+               reinterpret_cast<const struct sockaddr*>(&bind_addr),
+               sizeof(bind_addr));
+
+        // Set receive timeout
+        struct timeval tv;
+        tv.tv_sec = 5;
+        tv.tv_usec = 0;
+        setsockopt(h3->sock->native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+        http3_session::config cfg;
+        cfg.max_streams = 10;
+        cfg.host = host;
+        cfg.port = port;
+
+        h3->session = std::make_unique<http3_session>(http3_session::mode::client, cfg);
+
+        if (!h3->session->is_alive()) {
+            co_return response_make().status(status_code::internal_error())
+                .body("H3 session init failed").build();
+        }
+
+        // Send initial Client Hello
+        auto send_fn = [&sock = *h3->sock, &remote_ep = h3->remote_ep](const uint8_t* data, size_t len) -> Task<ssize_t> {
+            co_return sock.send_to(const_buffer(data, len), remote_ep);
+        };
+        {
+            auto pkts = h3->session->get_pending_packets();
+            for (auto& pkt : pkts) {
+                if (!pkt.empty()) {
+                    h3->sock->send_to(const_buffer(pkt.data(), pkt.size()), h3->remote_ep);
+                }
+            }
+        }
+
+        // Submit request (will be queued until handshake completes)
+        auto promise = std::make_shared<http3_session::response_promise>();
+        h3->session->submit_request(req, promise);
+
+        // Read loop
+        struct sockaddr_in local_addr{};
+        local_addr.sin_family = AF_INET;
+        local_addr.sin_addr.s_addr = INADDR_ANY;
+        local_addr.sin_port = 0;
+
+        char buf[4096];
+        udp::endpoint from;
+        int max_rounds = 200;
+        int idle_rounds = 0;
+
+        while (!promise->complete && h3->session->is_alive() && max_rounds-- > 0) {
+            auto n = co_await h3->sock->async_receive_from(
+                mutable_buffer(buf, sizeof(buf)), from);
+            if (n <= 0) {
+                idle_rounds++;
+                if (idle_rounds > 10) break;
+                h3->session->handle_expiry();
+                auto pkts = h3->session->get_pending_packets();
+                for (auto& pkt : pkts) {
+                    if (!pkt.empty()) h3->sock->send_to(const_buffer(pkt.data(), pkt.size()), h3->remote_ep);
+                }
+                continue;
+            }
+            idle_rounds = 0;
+            h3->session->feed_packet(
+                reinterpret_cast<const uint8_t*>(buf), static_cast<size_t>(n),
+                reinterpret_cast<const struct sockaddr*>(&local_addr), sizeof(local_addr),
+                h3->remote_ep.sockaddr_ptr(), h3->remote_ep.size());
+            auto pkts = h3->session->get_pending_packets();
+            for (auto& pkt : pkts) {
+                if (!pkt.empty()) {
+                    h3->sock->send_to(const_buffer(pkt.data(), pkt.size()), h3->remote_ep);
+                }
+            }
+            h3->session->handle_expiry();
+        }
+
+        if (promise->complete && !promise->error) {
+            response resp = std::move(promise->resp);
+            resp.ver = version::HTTP_3;
+            // Store in pool for reuse
+            if (h3->session->is_alive()) {
+                h3_pool_[key].push_back(std::move(h3));
+            }
+            co_return resp;
+        }
+    }
+
+    co_return response_make().status(status_code::internal_error())
+        .body("H3 request timed out or incomplete").build();
+}
+#endif
+
+} // namespace async_net::http

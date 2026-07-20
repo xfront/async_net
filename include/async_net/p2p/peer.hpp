@@ -6,8 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace async_net {
-namespace p2p {
+namespace async_net::p2p {
 
 /// Information about a peer registered with the tracker.
 struct peer_info {
@@ -89,5 +88,4 @@ struct peer_message {
     }
 };
 
-} // namespace p2p
-} // namespace async_net
+} // namespace async_net::p2p

@@ -12,12 +12,12 @@
 ///   tracker_port:  tracker server port     (default 9000)
 ///   peer_id:       this peer's unique name (required)
 ///   udp_port:      local UDP port          (default 8000)
-///   cert:          certificate PEM         (default examples/server_cert.pem)
-///   key:           private key PEM         (default examples/server_key.pem)
+///   cert:          certificate PEM         (default server_cert.pem)
+///   key:           private key PEM         (default server_key.pem)
 ///
 /// Generate test certs:
-///   openssl req -x509 -newkey rsa:2048 -keyout examples/server_key.pem \
-///     -out examples/server_cert.pem -days 365 -nodes \
+///   openssl req -x509 -newkey rsa:2048 -keyout server_key.pem \
+///     -out server_cert.pem -days 365 -nodes \
 ///     -subj "/CN=p2p-test"
 
 #ifdef ASYNC_NET_HAS_SSL
@@ -172,8 +172,8 @@ int main(int argc, char* argv[]) {
     uint16_t tracker_port = 9000;
     std::string peer_id;
     uint16_t udp_port = 8000;
-    const char* cert_file = "examples/server_cert.pem";
-    const char* key_file = "examples/server_key.pem";
+    const char* cert_file = "server_cert.pem";
+    const char* key_file = "server_key.pem";
 
     if (argc < 4) {
         std::fprintf(stderr, "Usage: %s <tracker_host> <tracker_port> <peer_id> [udp_port] [cert] [key]\n",

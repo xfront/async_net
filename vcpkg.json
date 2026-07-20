@@ -19,5 +19,25 @@
         "wolfssl"
       ]
     }
-  ]
+  ],
+  "features": {
+    "awslc": {
+      "description": "Use AWS-LC as SSL backend (replaces wolfSSL)",
+      "dependencies": [
+        {
+          "name": "aws-lc",
+          "platform": "!uwp"
+        }
+      ]
+    },
+    "libressl": {
+      "description": "Use LibreSSL >= 3.9.2 as SSL backend (QUIC/HTTP3 supported)",
+      "dependencies": [
+        {
+          "name": "libressl",
+          "platform": "!uwp"
+        }
+      ]
+    }
+  }
 }

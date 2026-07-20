@@ -5,8 +5,7 @@
 #include <concepts>
 #include <functional>
 
-namespace async_net {
-namespace http {
+namespace async_net::http {
 
 // Handler type: any callable that takes a request and returns Task<response>
 using handler_fn = std::function<Task<response>(const request&)>;
@@ -17,5 +16,4 @@ concept HttpHandler = requires(F f, const request& req) {
     { f(req) } -> std::same_as<Task<response>>;
 };
 
-} // namespace http
-} // namespace async_net
+} // namespace async_net::http

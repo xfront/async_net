@@ -283,9 +283,10 @@ std::string qpack_encoder::encode_static(
         int name_idx = find_static_name(name);
         if (name_idx >= 0) {
             // Literal with Name Reference (static): 01 N(=0) T(=1) name_index value
-            // Pattern: 0101xxxxx with 4-bit prefix for name index
-            result.push_back(0x50); // 0101 0000 — N=0, T=1
-            int n = qpack_encode_int(tmp, sizeof(tmp), static_cast<uint64_t>(name_idx), 4, 0x00);
+            // Pattern: 0 1 N T followed by 4-bit prefix for name index
+            // First byte: 0101xxxx where xxxx contains the name index (4-bit prefix)
+            uint8_t first_byte = 0x50; // 0101 0000 — N=0, T=1
+            int n = qpack_encode_int(tmp, sizeof(tmp), static_cast<uint64_t>(name_idx), 4, first_byte);
             result.append(reinterpret_cast<const char*>(tmp), n);
             result.append(qpack_encode_string(value));
             continue;
@@ -354,12 +355,12 @@ int qpack_decoder::decode_field_line(const uint8_t* data, size_t len,
     }
 
     // Literal with Name Reference (static): 0 1 N T name_idx value
-    if ((b & 0xD0) == 0x50) {
-        bool never_index = (b & 0x10) != 0;
-        bool is_static = (b & 0x08) != 0;
+    if ((b & 0xC0) == 0x40) {
+        bool never_index = (b & 0x20) != 0;  // Bit 5: N
+        bool is_static = (b & 0x10) != 0;    // Bit 4: T (1=static, 0=dynamic)
         (void)never_index;
         uint64_t name_idx;
-        int consumed = qpack_decode_int(data, len, 3, name_idx);
+        int consumed = qpack_decode_int(data, len, 4, name_idx);
         if (consumed == 0) return 0;
 
         std::string name;

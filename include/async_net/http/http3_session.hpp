@@ -11,8 +11,7 @@
 #include <memory>
 #include <sys/socket.h>
 
-namespace async_net {
-namespace http {
+namespace async_net::http {
 
 class http3_session {
 public:
@@ -116,5 +115,4 @@ private:
     std::unique_ptr<impl> impl_;
 };
 
-} // namespace http
-} // namespace async_net
+} // namespace async_net::http

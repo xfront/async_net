@@ -15,8 +15,12 @@
 #include <async_net/http/http2_session.hpp>
 #endif
 
-namespace async_net {
-namespace http {
+#ifdef ASYNC_NET_HAS_HTTP3
+#include <async_net/http/http3_session.hpp>
+#include <async_net/net/udp.hpp>
+#endif
+
+namespace async_net::http {
 
 // ---------------------------------------------------------------------------
 // HTTP Client — send requests, receive responses, connection reuse
@@ -80,6 +84,19 @@ private:
     std::map<std::string, std::vector<std::unique_ptr<h2_conn>>> h2_pool_;
 #endif
 
+#ifdef ASYNC_NET_HAS_HTTP3
+    // Pool of idle H3 sessions (QUIC/UDP connections)
+    struct h3_conn {
+        std::unique_ptr<udp::socket> sock;
+        std::unique_ptr<http3_session> session;
+        udp::endpoint remote_ep;
+    };
+    std::map<std::string, std::vector<std::unique_ptr<h3_conn>>> h3_pool_;
+
+    // Send request via HTTP/3 (QUIC/UDP)
+    Task<response> send_h3(const std::string& host, uint16_t port, request req);
+#endif
+
     // Return an H1 connection to the pool
     void return_h1(const std::string& key, std::unique_ptr<h1_conn> conn);
 
@@ -94,5 +111,4 @@ private:
 #endif
 };
 
-} // namespace http
-} // namespace async_net
+} // namespace async_net::http

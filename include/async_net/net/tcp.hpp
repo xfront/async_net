@@ -7,9 +7,7 @@
 #include <string>
 #include <thread>
 
-namespace async_net {
-
-namespace tcp {
+namespace async_net::tcp {
 
 // TCP socket
 class socket : public socket_base {
@@ -300,6 +298,6 @@ private:
     socket_t fd_;
 };
 
-} // namespace tcp
+} // namespace async_net::tcp
 
-} // namespace async_net
+

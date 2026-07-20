@@ -11,8 +11,7 @@
 #include <vector>
 #include <memory>
 
-namespace async_net {
-namespace http {
+namespace async_net::http {
 
 class http2_session {
 public:
@@ -83,5 +82,4 @@ private:
     std::unique_ptr<impl> impl_;
 };
 
-} // namespace http
-} // namespace async_net
+} // namespace async_net::http

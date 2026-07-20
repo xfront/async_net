@@ -15,8 +15,11 @@
 #include <async_net/net/ssl.hpp>
 #endif
 
-namespace async_net {
-namespace http {
+#ifdef ASYNC_NET_HAS_HTTP3
+#include <string>
+#endif
+
+namespace async_net::http {
 
 // ---------------------------------------------------------------------------
 // HTTP Server — route-based request handling with keep-alive
@@ -48,6 +51,12 @@ public:
     Task<void> serve_h2(ssl::context& ssl_ctx);
 #endif
 
+#ifdef ASYNC_NET_HAS_HTTP3
+    // Start serving HTTP/3 over QUIC/UDP
+    // cert_file/key_file: PEM files for TLS
+    Task<void> serve_h3(const std::string& cert_file, const std::string& key_file);
+#endif
+
     // Stop the server
     void stop();
 
@@ -60,6 +69,7 @@ private:
 
     io_context& ctx_;
     tcp::acceptor acceptor_;
+    uint16_t port_;
     std::vector<route_entry> routes_;
     handler_fn default_handler_;
     push_provider push_provider_;
@@ -91,5 +101,4 @@ private:
     void cleanup_task(Task<void>* task);
 };
 
-} // namespace http
-} // namespace async_net
+} // namespace async_net::http

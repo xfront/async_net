@@ -77,8 +77,8 @@ Task<void> run_server(io_context& ctx, uint16_t port, ssl::context& ssl_ctx) {
 
 int main(int argc, char* argv[]) {
     uint16_t port = 8443;
-    const char* cert_file = "examples/server_cert.pem";
-    const char* key_file = "examples/server_key.pem";
+    const char* cert_file = "server_cert.pem";
+    const char* key_file = "server_key.pem";
 
     if (argc > 1) port = static_cast<uint16_t>(std::atoi(argv[1]));
     if (argc > 2) cert_file = argv[2];

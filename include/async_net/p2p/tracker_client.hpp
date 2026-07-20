@@ -8,8 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace async_net {
-namespace p2p {
+namespace async_net::p2p {
 
 /// P2P Tracker Client — connects to a tracker server for peer discovery.
 ///
@@ -57,5 +56,4 @@ private:
     bool connected_ = false;
 };
 
-} // namespace p2p
-} // namespace async_net
+} // namespace async_net::p2p

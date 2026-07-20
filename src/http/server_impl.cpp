@@ -2,20 +2,26 @@
 #include "../http/http1_codec.hpp"
 #include <iostream>
 #include <cstring>
+#include <unordered_map>
 
 #ifdef ASYNC_NET_HAS_SSL
 #include <async_net/http/http2_session.hpp>
 #endif
 
-namespace async_net {
-namespace http {
+#ifdef ASYNC_NET_HAS_HTTP3
+#include <async_net/http/http3_session.hpp>
+#include <async_net/net/udp.hpp>
+#include <arpa/inet.h>
+#endif
+
+namespace async_net::http {
 
 // ---------------------------------------------------------------------------
 // Constructor
 // ---------------------------------------------------------------------------
 
 server::server(io_context& ctx, uint16_t port, const char* addr)
-    : ctx_(ctx), acceptor_(ctx, port, addr) {
+    : ctx_(ctx), acceptor_(ctx, port, addr), port_(port) {
     // Default 404 handler
     default_handler_ = [](const request&) -> Task<response> {
         co_return response_not_found();
@@ -431,5 +437,135 @@ h2_done:
 }
 #endif
 
-} // namespace http
-} // namespace async_net
+// ---------------------------------------------------------------------------
+// serve_h3() — HTTP/3 over QUIC/UDP
+// ---------------------------------------------------------------------------
+
+#ifdef ASYNC_NET_HAS_HTTP3
+Task<void> server::serve_h3(const std::string& cert_file, const std::string& key_file) {
+    uint16_t port = port_;
+
+    udp::socket udp_sock(ctx_);
+    udp::endpoint ep(port);
+    if (!udp_sock.bind(ep)) {
+        std::cerr << "[http::server] Failed to bind UDP port " << port << std::endl;
+        co_return;
+    }
+
+    std::cout << "[http::server] HTTP/3 listening on UDP port " << port << std::endl;
+
+    http3_session::config cfg;
+    cfg.cert_file = cert_file;
+    cfg.key_file = key_file;
+    cfg.max_streams = 100;
+
+    // Local address for QUIC path validation
+    struct sockaddr_in local_addr{};
+    local_addr.sin_family = AF_INET;
+    local_addr.sin_port = htons(port);
+    local_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    // Connection map: remote endpoint → session
+    struct conn_state {
+        std::unique_ptr<http3_session> session;
+        udp::endpoint remote;
+    };
+    std::unordered_map<std::string, conn_state> connections;
+
+    // Build a key from endpoint
+    auto ep_key = [](const udp::endpoint& e) -> std::string {
+        return e.address() + ":" + std::to_string(e.port());
+    };
+
+    // Synchronous request handler that dispatches to our coroutine routes
+    auto make_request_handler = [this](const request& req) -> response {
+        for (auto& r : routes_) {
+            if (r.m == req.method && r.path == req.path) {
+                auto task = r.handler(req);
+                task.resume();
+                if (task.done()) {
+                    return task.handle().promise().result();
+                }
+                return response_internal_error("Handler did not complete synchronously");
+            }
+        }
+        auto task = default_handler_(req);
+        task.resume();
+        if (task.done()) {
+            return task.handle().promise().result();
+        }
+        return response_not_found();
+    };
+
+    char buf[4096];
+    udp::endpoint from;
+
+    while (running_) {
+        auto n = co_await udp_sock.async_receive_from(
+            mutable_buffer(buf, sizeof(buf)), from);
+        if (n <= 0) continue;
+
+        std::string key = ep_key(from);
+
+        // Evict dead sessions periodically
+        for (auto it = connections.begin(); it != connections.end(); ) {
+            if (it->second.session && !it->second.session->is_alive()) {
+                it = connections.erase(it);
+            } else {
+                ++it;
+            }
+        }
+
+        auto& cs = connections[key];
+
+        if (!cs.session) {
+            cs.session = std::make_unique<http3_session>(
+                http3_session::mode::server, cfg);
+            cs.remote = from;
+
+            cs.session->set_request_handler(make_request_handler);
+
+            if (push_provider_) {
+                cs.session->set_push_provider(push_provider_);
+            }
+
+            if (!cs.session->init_server_from_packet(
+                    reinterpret_cast<const uint8_t*>(buf), static_cast<size_t>(n),
+                    reinterpret_cast<const struct sockaddr*>(&local_addr), sizeof(local_addr),
+                    from.sockaddr_ptr(), from.size())) {
+                std::cerr << "[http::server] H3 init_server_from_packet failed" << std::endl;
+                cs.session.reset();
+                continue;
+            }
+
+            // Feed the initial packet to the newly created connection
+            // (init_server_from_packet only creates the ngtcp2 conn,
+            //  it does NOT process the packet data)
+            cs.session->feed_packet(
+                reinterpret_cast<const uint8_t*>(buf), static_cast<size_t>(n),
+                reinterpret_cast<const struct sockaddr*>(&local_addr), sizeof(local_addr),
+                from.sockaddr_ptr(), from.size());
+        } else {
+            cs.session->feed_packet(
+                reinterpret_cast<const uint8_t*>(buf), static_cast<size_t>(n),
+                reinterpret_cast<const struct sockaddr*>(&local_addr), sizeof(local_addr),
+                from.sockaddr_ptr(), from.size());
+        }
+
+        // Send output packets (use synchronous send_to to avoid blocking the loop)
+        auto pkts = cs.session->get_pending_packets();
+        for (auto& pkt : pkts) {
+            if (!pkt.empty()) {
+                udp_sock.send_to(
+                    const_buffer(pkt.data(), pkt.size()), from);
+            }
+        }
+
+        cs.session->handle_expiry();
+    }
+
+    udp_sock.close();
+}
+#endif
+
+} // namespace async_net::http

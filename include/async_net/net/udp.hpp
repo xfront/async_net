@@ -6,9 +6,7 @@
 #include <cstring>
 #include <string>
 
-namespace async_net {
-
-namespace udp {
+namespace async_net::udp {
 
 // UDP endpoint
 class endpoint {
@@ -180,6 +178,6 @@ public:
     }
 };
 
-} // namespace udp
+} // namespace async_net::udp
 
-} // namespace async_net
+

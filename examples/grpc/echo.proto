@@ -1,0 +1,44 @@
+// Echo service protobuf definition
+// This file demonstrates the gRPC service definition format.
+// Use async_net_protobuf_generate() in CMake to generate C++ code.
+
+syntax = "proto3";
+
+package echo;
+
+// Echo service — demonstrates all 4 RPC types
+service EchoService {
+    // Unary RPC: single request, single response
+    rpc Echo(EchoRequest) returns (EchoResponse);
+    
+    // Server-streaming RPC: single request, stream of responses
+    rpc ServerStream(EchoRequest) returns (stream EchoResponse);
+    
+    // Client-streaming RPC: stream of requests, single response
+    rpc ClientStream(stream EchoRequest) returns (EchoResponse);
+    
+    // Bidirectional-streaming RPC: stream of requests, stream of responses
+    rpc BidiStream(stream EchoRequest) returns (stream EchoResponse);
+}
+
+// Greeter service — simple unary RPC example
+service GreeterService {
+    rpc SayHello(HelloRequest) returns (HelloResponse);
+}
+
+// Messages
+message EchoRequest {
+    string message = 1;
+}
+
+message EchoResponse {
+    string message = 1;
+}
+
+message HelloRequest {
+    string name = 1;
+}
+
+message HelloResponse {
+    string greeting = 1;
+}

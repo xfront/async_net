@@ -3,6 +3,7 @@
 #include <cstring>
 #include <algorithm>
 #include <stdexcept>
+#include <iostream>
 
 namespace async_net::http::h2 {
 
@@ -384,39 +385,28 @@ std::string hpack_encoder::encode(
         table_size_updated_ = false;
     }
 
+    // Use "Literal Header Field without Indexing" (§6.2.2) for ALL headers.
+    // This avoids dynamic table references entirely, eliminating encoder/decoder
+    // synchronization issues. The trade-off is larger encoded size, but correctness
+    // is paramount. Static table exact matches still use indexed representation
+    // since both sides agree on the static table.
     for (auto& [name, value] : headers) {
-        // Try static table
+        // Check static table for exact match (safe — static table is shared)
         auto [static_idx, static_exact] = hpack_find_static(name, value);
 
-        // Try dynamic table
-        auto [dyn_idx, dyn_exact] = dynamic_table_.find(name, value);
-        size_t dyn_offset = hpack_static_table().size();  // dynamic indices start after static
-
         if (static_exact) {
-            // Indexed Header Field (RFC 7541 §6.1)
+            // Indexed Header Field from static table (both sides agree)
             uint8_t buf[16];
             int n = hpack_encode_int(buf, sizeof(buf), static_idx, 7, 0x80);
             result.append(reinterpret_cast<char*>(buf), n);
-        } else if (dyn_exact) {
-            uint8_t buf[16];
-            int n = hpack_encode_int(buf, sizeof(buf), dyn_idx + dyn_offset, 7, 0x80);
-            result.append(reinterpret_cast<char*>(buf), n);
         } else {
-            // Literal Header Field with Incremental Indexing (§6.2.1)
-            int name_idx = static_idx > 0 ? static_idx :
-                          (dyn_idx > 0 ? static_cast<int>(dyn_idx + dyn_offset) : 0);
-
+            // Literal without Indexing (§6.2.2): 0xxx xxxx with name_idx=0
+            // This does NOT add to the dynamic table, keeping both sides in sync.
             uint8_t buf[16];
-            int n = hpack_encode_int(buf, sizeof(buf), name_idx, 6, 0x40);
+            int n = hpack_encode_int(buf, sizeof(buf), 0, 4, 0x00);
             result.append(reinterpret_cast<char*>(buf), n);
-
-            if (name_idx == 0) {
-                result.append(encode_string(name));
-            }
+            result.append(encode_string(name));
             result.append(encode_string(value));
-
-            // Add to dynamic table
-            dynamic_table_.add(name, value);
         }
     }
 
@@ -455,6 +445,9 @@ hpack_decoder::decode(const uint8_t* data, size_t len) {
     std::vector<std::pair<std::string, std::string>> result;
     size_t pos = 0;
 
+    // Collect new entries to add AFTER all headers are decoded
+    std::vector<std::pair<std::string, std::string>> new_entries;
+
     while (pos < len) {
         uint8_t byte = data[pos];
 
@@ -487,7 +480,8 @@ hpack_decoder::decode(const uint8_t* data, size_t len) {
             if (c == 0) return {};
             value = std::move(s);
             pos += c;
-            dynamic_table_.add(name, value);
+            // Defer adding to dynamic table
+            new_entries.emplace_back(name, value);
             result.emplace_back(std::move(name), std::move(value));
         } else if (byte & 0x20) {
             // Dynamic Table Size Update (§6.3)
@@ -498,7 +492,7 @@ hpack_decoder::decode(const uint8_t* data, size_t len) {
             dynamic_table_.resize(new_size);
         } else {
             // Literal without Indexing (§6.2.2) or Never Indexed (§6.2.3)
-            uint8_t prefix = (byte & 0x10) ? 4 : 4;  // Both use 4-bit prefix
+            uint8_t prefix = (byte & 0x10) ? 4 : 4;
             uint64_t name_index = 0;
             int consumed = hpack_decode_int(data + pos, len - pos, prefix, name_index);
             if (consumed == 0) return {};
@@ -520,6 +514,12 @@ hpack_decoder::decode(const uint8_t* data, size_t len) {
             result.emplace_back(std::move(name), std::move(value));
         }
     }
+
+    // Add all new entries to dynamic table after decoding all headers
+    for (auto& [name, value] : new_entries) {
+        dynamic_table_.add(name, value);
+    }
+
     return result;
 }
 

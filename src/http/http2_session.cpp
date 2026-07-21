@@ -9,6 +9,14 @@
 
 namespace async_net::http {
 
+// Helper: convert header name to lowercase (HTTP/2 requires lowercase headers)
+static std::string to_lower_header(const std::string& hdr) {
+    std::string lower = hdr;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return lower;
+}
+
 // ============================================================================
 // Internal implementation (pimpl)
 // ============================================================================
@@ -31,6 +39,12 @@ struct http2_session::impl {
         int64_t recv_window = static_cast<int64_t>(h2::DEFAULT_WINDOW_SIZE);
         std::shared_ptr<http2_session::response_promise> promise;
 
+        // Streaming: data callback (when set, DATA frames go to callback instead of body buffer)
+        http2_session::data_callback data_cb;
+
+        // Set when request_start_handler has taken ownership of this stream
+        bool streaming_handled = false;
+
         // For CONTINUATION frames
         std::string pending_header_block;
     };
@@ -38,6 +52,7 @@ struct http2_session::impl {
     mode mode_;
     bool alive_ = true;
     bool preface_received_ = false;
+    bool flushing_ = false;  // Prevents concurrent flush calls
 
     h2::frame_reader reader_;
     std::string output_buf_;
@@ -51,6 +66,8 @@ struct http2_session::impl {
     size_t peer_max_frame_size_ = h2::DEFAULT_MAX_FRAME_SIZE;
     uint32_t peer_initial_window_size_ = h2::DEFAULT_WINDOW_SIZE;
     request_handler request_handler_;
+    http2_session::streaming_request_handler streaming_request_handler_;
+    http2_session::request_start_handler request_start_handler_;
     http2_session::push_provider push_provider_;
     http2_session::push_handler push_handler_;
     std::vector<std::shared_ptr<http2_session::response_promise>> completed_promises_;
@@ -164,8 +181,13 @@ struct http2_session::impl {
             payload_len -= (1 + pad_len);
         }
 
-        // Accumulate body
-        ss.body.append(reinterpret_cast<const char*>(payload + offset), payload_len);
+        // Accumulate body (or deliver to streaming callback)
+        if (ss.data_cb) {
+            bool end_stream_flag = f.hdr.has_flag(h2::flag::END_STREAM);
+            ss.data_cb(sid, payload + offset, payload_len, end_stream_flag);
+        } else {
+            ss.body.append(reinterpret_cast<const char*>(payload + offset), payload_len);
+        }
 
         // Update flow control (connection + stream)
         conn_recv_window_ -= static_cast<int64_t>(payload_len);
@@ -186,7 +208,10 @@ struct http2_session::impl {
         if (f.hdr.has_flag(h2::flag::END_STREAM)) {
             ss.end_stream = true;
             if (mode_ == mode::server) {
-                dispatch_request(sid, ss);
+                // Don't dispatch if streaming handler already took ownership
+                if (!ss.streaming_handled) {
+                    dispatch_request(sid, ss);
+                }
             } else {
                 complete_promise(ss);
             }
@@ -226,6 +251,19 @@ struct http2_session::impl {
         bool end_stream = f.hdr.has_flag(h2::flag::END_STREAM);
 
         if (mode_ == mode::server) {
+            // Check if this is a trailer HEADERS on an already-established streaming stream
+            auto existing_it = streams_.find(sid);
+            if (existing_it != streams_.end() && existing_it->second.streaming_handled && end_stream) {
+                // This is trailers (second HEADERS with END_STREAM) on a streaming stream.
+                // Signal end_stream to the data_callback so it can finalize.
+                auto& ss = existing_it->second;
+                if (ss.data_cb) {
+                    ss.data_cb(sid, nullptr, 0, true);
+                }
+                ss.end_stream = true;
+                return;
+            }
+
             // Create or find stream
             auto& ss = streams_[sid];
             ss.stream_id = sid;
@@ -248,6 +286,17 @@ struct http2_session::impl {
             auto it = streams_.find(sid);
             if (it == streams_.end()) return;
             auto& ss = it->second;
+
+            // Check if this is trailer HEADERS on a streaming response
+            // (stream already has headers_complete and a data_cb registered)
+            if (ss.headers_complete && ss.data_cb && end_stream) {
+                // Signal end_stream to the data_callback
+                ss.data_cb(sid, nullptr, 0, true);
+                // Still apply trailers and complete promise (for PromiseAwaiter)
+                auto headers = decoder_.decode(header_block, header_block_len);
+                apply_response_headers(sid, ss, headers, end_stream);
+                return;
+            }
 
             if (end_headers) {
                 auto headers = decoder_.decode(header_block, header_block_len);
@@ -289,7 +338,24 @@ struct http2_session::impl {
 
         if (end_stream) {
             ss.end_stream = true;
-            dispatch_request(sid, ss);
+            if (request_start_handler_) {
+                // Let the start handler decide
+                if (request_start_handler_(sid, ss.req, true)) {
+                    ss.streaming_handled = true;
+                    // Streaming handler took ownership — no dispatch needed
+                } else {
+                    // Not taken by streaming handler, dispatch normally
+                    dispatch_request(sid, ss);
+                }
+            } else {
+                dispatch_request(sid, ss);
+            }
+        } else if (request_start_handler_) {
+            // Headers complete but body not yet received (streaming request)
+            // Notify the handler so it can set up data callbacks
+            if (request_start_handler_(sid, ss.req, false)) {
+                ss.streaming_handled = true;
+            }
         }
     }
 
@@ -530,6 +596,11 @@ struct http2_session::impl {
         ss.req.bd = body(std::move(ss.body));
         ss.body.clear();
 
+        // Try streaming handler first
+        if (streaming_request_handler_ && streaming_request_handler_(sid, ss.req)) {
+            return; // Streaming handler took ownership
+        }
+
         if (request_handler_) {
             response resp = request_handler_(ss.req);
             do_submit_response(sid, resp);
@@ -574,24 +645,98 @@ struct http2_session::impl {
 
         // Additional headers
         for (auto& [k, v] : resp.hdrs) {
-            std::string lk = k;
-            std::transform(lk.begin(), lk.end(), lk.begin(),
-                [](unsigned char c) { return std::tolower(c); });
+            std::string lk = to_lower_header(k);
             if (lk == "content-type" || lk == "content-length" || lk == "connection" ||
                 lk == "transfer-encoding") continue;
             hdrs.emplace_back(lk, v);
         }
 
         bool has_body = !resp.bd.empty();
-        uint8_t flags = has_body ? 0 : h2::flag::END_STREAM;
+        bool has_trailers = !resp.trailers.empty();
+        
+        // If we have trailers, don't set END_STREAM on headers or data
+        uint8_t flags = (has_body || has_trailers) ? 0 : h2::flag::END_STREAM;
 
         enqueue(build_headers_frame(stream_id, flags, hdrs));
 
         if (has_body) {
-            enqueue(build_data_frames(stream_id, resp.bd.data()));
+            // If trailers follow, don't set END_STREAM on data frames
+            enqueue(build_data_frames(stream_id, resp.bd.data(), has_trailers));
+        }
+
+        // Send trailers if present (as HEADERS frame with END_STREAM)
+        if (has_trailers) {
+            std::vector<std::pair<std::string, std::string>> trailer_hdrs;
+            for (auto& [k, v] : resp.trailers) {
+                std::string lk = to_lower_header(k);
+                trailer_hdrs.emplace_back(lk, v);
+            }
+            enqueue(build_headers_frame(stream_id, h2::flag::END_STREAM, trailer_hdrs));
         }
 
         // Mark stream as closed (server side)
+        auto it = streams_.find(stream_id);
+        if (it != streams_.end()) {
+            it->second.state = stream_state::closed;
+        }
+    }
+
+    // --- Submit response headers only (for streaming responses) ---
+    void do_submit_response_headers(int32_t stream_id, const response& resp) {
+        std::string status_str = std::to_string(resp.status.as_int());
+        std::vector<std::pair<std::string, std::string>> hdrs;
+        hdrs.emplace_back(":status", status_str);
+
+        auto ct = resp.hdrs.get("Content-Type");
+        if (ct) hdrs.emplace_back("content-type", *ct);
+
+        // Additional headers
+        for (auto& [k, v] : resp.hdrs) {
+            std::string lk = to_lower_header(k);
+            if (lk == "content-type" || lk == "content-length" || lk == "connection" ||
+                lk == "transfer-encoding") continue;
+            hdrs.emplace_back(lk, v);
+        }
+
+        // No END_STREAM — stream stays open for streaming data
+        enqueue(build_headers_frame(stream_id, 0, hdrs));
+    }
+
+    // --- Submit DATA frame on an open stream ---
+    void do_submit_data(int32_t stream_id, const std::string& data, bool end_stream) {
+        uint8_t flags = end_stream ? h2::flag::END_STREAM : 0;
+        if (data.empty()) {
+            enqueue(h2::build_frame(h2::frame_type::DATA, flags, stream_id, ""));
+        } else {
+            // Split into chunks if needed
+            size_t offset = 0;
+            while (offset < data.size()) {
+                size_t chunk_size = std::min(peer_max_frame_size_, data.size() - offset);
+                std::string chunk = data.substr(offset, chunk_size);
+                offset += chunk_size;
+                bool is_last = (offset >= data.size());
+                uint8_t f = (end_stream && is_last) ? h2::flag::END_STREAM : 0;
+                enqueue(h2::build_frame(h2::frame_type::DATA, f, stream_id, chunk));
+            }
+        }
+
+        if (end_stream) {
+            auto it = streams_.find(stream_id);
+            if (it != streams_.end()) {
+                it->second.state = stream_state::closed;
+            }
+        }
+    }
+
+    // --- Submit trailers (HEADERS + END_STREAM) ---
+    void do_submit_trailers(int32_t stream_id, const headers& trailers) {
+        std::vector<std::pair<std::string, std::string>> trailer_hdrs;
+        for (auto& [k, v] : trailers) {
+            std::string lk = to_lower_header(k);
+            trailer_hdrs.emplace_back(lk, v);
+        }
+        enqueue(build_headers_frame(stream_id, h2::flag::END_STREAM, trailer_hdrs));
+
         auto it = streams_.find(stream_id);
         if (it != streams_.end()) {
             it->second.state = stream_state::closed;
@@ -628,7 +773,7 @@ struct http2_session::impl {
     }
 
     // --- Build DATA frames ---
-    std::string build_data_frames(int32_t stream_id, const std::string& body_data) {
+    std::string build_data_frames(int32_t stream_id, const std::string& body_data, bool no_end_stream = false) {
         std::string result;
         size_t offset = 0;
 
@@ -637,12 +782,13 @@ struct http2_session::impl {
             std::string chunk = body_data.substr(offset, chunk_size);
             offset += chunk_size;
 
-            uint8_t flags = (offset >= body_data.size()) ? h2::flag::END_STREAM : 0;
+            // Set END_STREAM on last chunk only if no trailers follow
+            uint8_t flags = (!no_end_stream && offset >= body_data.size()) ? h2::flag::END_STREAM : 0;
             result.append(h2::build_frame(h2::frame_type::DATA, flags, stream_id, chunk));
         }
 
         // Empty body with END_STREAM (shouldn't happen since we check has_body)
-        if (body_data.empty()) {
+        if (body_data.empty() && !no_end_stream) {
             result.append(h2::build_frame(h2::frame_type::DATA, h2::flag::END_STREAM,
                                           stream_id, ""));
         }
@@ -651,7 +797,8 @@ struct http2_session::impl {
 
     // --- Submit request (client) ---
     int32_t do_submit_request(const request& req,
-                              std::shared_ptr<http2_session::response_promise> promise) {
+                              std::shared_ptr<http2_session::response_promise> promise,
+                              bool no_end_stream = false) {
         int32_t stream_id = next_stream_id_;
         next_stream_id_ += 2;
 
@@ -669,15 +816,14 @@ struct http2_session::impl {
         hdrs.emplace_back(":authority", host);
 
         for (auto& [k, v] : req.hdrs) {
-            std::string lk = k;
-            std::transform(lk.begin(), lk.end(), lk.begin(),
-                [](unsigned char c) { return std::tolower(c); });
+            std::string lk = to_lower_header(k);
             if (lk == "host" || lk == "connection") continue;
             hdrs.emplace_back(lk, v);
         }
 
         bool has_body = !req.bd.empty();
-        uint8_t flags = has_body ? 0 : h2::flag::END_STREAM;
+        // For streaming: don't set END_STREAM on HEADERS even without body
+        uint8_t flags = (has_body || no_end_stream) ? 0 : h2::flag::END_STREAM;
         enqueue(build_headers_frame(stream_id, flags, hdrs));
 
         if (has_body) {
@@ -703,9 +849,7 @@ struct http2_session::impl {
         auto host = promised_req.hdrs.get("Host").value_or("localhost");
         push_hdrs.emplace_back(":authority", host);
         for (auto& [k, v] : promised_req.hdrs) {
-            std::string lk = k;
-            std::transform(lk.begin(), lk.end(), lk.begin(),
-                [](unsigned char c) { return std::tolower(c); });
+            std::string lk = to_lower_header(k);
             if (lk == "host" || lk == "connection") continue;
             push_hdrs.emplace_back(lk, v);
         }
@@ -761,29 +905,78 @@ bool http2_session::is_alive() const {
 }
 
 Task<bool> http2_session::flush(send_fn fn) {
-    auto data = get_pending_output();
-    if (data.empty()) co_return true;
-    size_t sent = 0;
-    while (sent < data.size()) {
-        auto n = co_await fn(reinterpret_cast<const uint8_t*>(data.data() + sent),
-                              data.size() - sent);
-        if (n <= 0) co_return false;
-        sent += static_cast<size_t>(n);
+    // Prevent concurrent flush calls (e.g., from data_callback inside another flush)
+    if (impl_->flushing_) {
+        // Another flush is in progress — it will pick up our data after finishing
+        co_return true;
     }
-    co_return true;
+    impl_->flushing_ = true;
+
+    bool all_ok = true;
+    while (all_ok) {
+        auto data = get_pending_output();
+        if (data.empty()) break;
+
+        size_t sent = 0;
+        while (sent < data.size()) {
+            auto n = co_await fn(reinterpret_cast<const uint8_t*>(data.data() + sent),
+                                  data.size() - sent);
+            if (n <= 0) {
+                all_ok = false;
+                break;
+            }
+            sent += static_cast<size_t>(n);
+        }
+    }
+
+    impl_->flushing_ = false;
+    co_return all_ok;
 }
 
 void http2_session::set_request_handler(request_handler handler) {
     impl_->request_handler_ = std::move(handler);
 }
 
+void http2_session::set_streaming_request_handler(streaming_request_handler handler) {
+    impl_->streaming_request_handler_ = std::move(handler);
+}
+
+void http2_session::set_request_start_handler(request_start_handler handler) {
+    impl_->request_start_handler_ = std::move(handler);
+}
+
 void http2_session::submit_response(int32_t stream_id, const response& resp) {
     impl_->do_submit_response(stream_id, resp);
+}
+
+void http2_session::set_data_callback(int32_t stream_id, data_callback cb) {
+    auto it = impl_->streams_.find(stream_id);
+    if (it != impl_->streams_.end()) {
+        it->second.data_cb = std::move(cb);
+    }
+}
+
+void http2_session::submit_response_headers(int32_t stream_id, const response& resp) {
+    impl_->do_submit_response_headers(stream_id, resp);
+}
+
+void http2_session::submit_data(int32_t stream_id, const std::string& data, bool end_stream) {
+    impl_->do_submit_data(stream_id, data, end_stream);
+}
+
+void http2_session::submit_trailers(int32_t stream_id, const headers& trailers) {
+    impl_->do_submit_trailers(stream_id, trailers);
 }
 
 int32_t http2_session::submit_request(const request& req,
                                        std::shared_ptr<response_promise> promise) {
     return impl_->do_submit_request(req, std::move(promise));
+}
+
+int32_t http2_session::submit_request(const request& req,
+                                       std::shared_ptr<response_promise> promise,
+                                       bool no_end_stream) {
+    return impl_->do_submit_request(req, std::move(promise), no_end_stream);
 }
 
 std::vector<std::shared_ptr<http2_session::response_promise>>

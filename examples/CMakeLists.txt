@@ -50,3 +50,20 @@ target_link_libraries(im_server PRIVATE async_net)
 
 add_executable(im_client_sim im_client_sim.cpp)
 target_link_libraries(im_client_sim PRIVATE async_net)
+
+# gRPC examples (with Protocol Buffers)
+if(ASYNC_NET_HAS_GRPC)
+    # Generate C++ code from echo.proto via protoc
+    async_net_protobuf_library(
+        NAME grpc_echo_proto
+        PROTOS grpc/echo.proto
+    )
+
+    add_executable(grpc_echo_server grpc_echo_server.cpp)
+    target_link_libraries(grpc_echo_server PRIVATE async_net grpc_echo_proto)
+    target_include_directories(grpc_echo_server PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated_grpc_echo_proto)
+
+    add_executable(grpc_echo_client grpc_echo_client.cpp)
+    target_link_libraries(grpc_echo_client PRIVATE async_net grpc_echo_proto)
+    target_include_directories(grpc_echo_client PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated_grpc_echo_proto)
+endif()

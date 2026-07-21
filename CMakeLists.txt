@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
 project(async_net LANGUAGES CXX)
 
+# Include custom CMake modules
+include(cmake/AsyncNetProtobuf.cmake)
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -15,6 +18,9 @@ option(ASYNC_NET_WITH_HTTP2 "Enable HTTP/2 support" ON)
 
 # HTTP/3 support (SSL + ngtcp2 + self-contained QPACK/H3)
 option(ASYNC_NET_WITH_HTTP3 "Enable HTTP/3 support (QUIC)" ON)
+
+# gRPC support (HTTP/2 + protobuf + self-contained wire protocol)
+option(ASYNC_NET_WITH_GRPC "Enable gRPC support" ON)
 
 # Compiler-specific coroutine flags
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
@@ -83,6 +89,25 @@ endif()
 
 # Find ngtcp2 (for HTTP/3)
 find_package(ngtcp2 CONFIG HINTS ${_VCPKG_HINTS})
+
+# Find protobuf (for gRPC)
+set(ASYNC_NET_GRPC_FOUND FALSE)
+if(ASYNC_NET_WITH_GRPC)
+    find_package(protobuf CONFIG HINTS ${_VCPKG_HINTS})
+    if(protobuf_FOUND)
+        set(ASYNC_NET_GRPC_FOUND TRUE)
+        message(STATUS "gRPC support: enabled (protobuf via vcpkg)")
+    else()
+        # Try module mode for system protobuf
+        find_package(Protobuf)
+        if(Protobuf_FOUND)
+            set(ASYNC_NET_GRPC_FOUND TRUE)
+            message(STATUS "gRPC support: enabled (system protobuf)")
+        else()
+            message(STATUS "gRPC support: disabled (protobuf not found)")
+        endif()
+    endif()
+endif()
 
 # Library sources - platform specific
 set(ASYNC_NET_SOURCES
@@ -176,8 +201,41 @@ if(ASYNC_NET_WITH_HTTP3)
     endif()
 endif()
 
+# gRPC support (HTTP/2 + wire protocol)
+# Note: protobuf is optional - core gRPC just passes raw bytes
+set(ASYNC_NET_HAS_GRPC FALSE)
+if(ASYNC_NET_WITH_GRPC AND ASYNC_NET_HAS_HTTP2)
+    list(APPEND ASYNC_NET_SOURCES
+        src/grpc/grpc_wire.cpp
+        src/grpc/grpc_server.cpp
+        src/grpc/grpc_channel.cpp
+        src/grpc/grpc_stream.cpp
+    )
+    set(ASYNC_NET_HAS_GRPC TRUE)
+endif()
+
 add_library(async_net ${ASYNC_NET_SOURCES})
 target_include_directories(async_net PUBLIC include PRIVATE src)
+
+# gRPC compile definitions and linkage (after library creation)
+if(ASYNC_NET_HAS_GRPC)
+    target_compile_definitions(async_net PUBLIC ASYNC_NET_HAS_GRPC=1)
+    
+    # Link protobuf if found (optional)
+    if(ASYNC_NET_GRPC_FOUND)
+        if(TARGET protobuf::libprotobuf)
+            target_link_libraries(async_net PUBLIC protobuf::libprotobuf)
+            target_compile_definitions(async_net PUBLIC ASYNC_NET_HAS_PROTOBUF=1)
+        else()
+            target_link_libraries(async_net PUBLIC ${Protobuf_LIBRARIES})
+            target_include_directories(async_net PUBLIC ${Protobuf_INCLUDE_DIRS})
+            target_compile_definitions(async_net PUBLIC ASYNC_NET_HAS_PROTOBUF=1)
+        endif()
+        message(STATUS "gRPC support: enabled (with protobuf)")
+    else()
+        message(STATUS "gRPC support: enabled (without protobuf - raw bytes only)")
+    endif()
+endif()
 
 # SSL backend linkage
 if(ASYNC_NET_HAS_SSL)

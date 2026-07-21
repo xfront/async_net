@@ -409,6 +409,7 @@ struct response {
     http::version ver = http::version::HTTP_11;
     http::headers hdrs;
     http::body bd;
+    http::headers trailers;  // HTTP/2 trailers (for gRPC support)
 };
 
 // ---------------------------------------------------------------------------

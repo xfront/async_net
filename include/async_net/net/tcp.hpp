@@ -203,7 +203,7 @@ public:
 // TCP acceptor
 class acceptor {
 public:
-    acceptor(io_context& ctx, uint16_t port, const char* addr = "0.0.0.0")
+    acceptor(io_context& ctx, uint16_t port, const char* addr = "0.0.0.0", bool reuse_port = false)
         : ctx_(&ctx) {
         fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
         if (fd_ == invalid_socket) {
@@ -211,6 +211,9 @@ public:
         }
 
         set_reuse_addr(fd_);
+        if (reuse_port) {
+            set_reuse_port(fd_);
+        }
         set_nonblocking(fd_);
         ctx_->backend().register_socket(fd_);
 

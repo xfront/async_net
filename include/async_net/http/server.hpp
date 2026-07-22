@@ -10,6 +10,9 @@
 #include <vector>
 #include <utility>
 #include <unordered_set>
+#include <thread>
+#include <atomic>
+#include <memory>
 
 #ifdef ASYNC_NET_HAS_SSL
 #include <async_net/net/ssl.hpp>
@@ -27,7 +30,7 @@ namespace async_net::http {
 
 class server {
 public:
-    server(io_context& ctx, uint16_t port, const char* addr = "0.0.0.0");
+    server(io_context& ctx, uint16_t port, const char* addr = "0.0.0.0", bool reuse_port = false);
 
     // Register a route handler
     void route(method m, const std::string& path, handler_fn handler);
@@ -60,6 +63,18 @@ public:
     // Stop the server
     void stop();
 
+    // Multi-threaded serving — utilizes multiple CPU cores.
+    //
+    // Linux/macOS: Creates N workers, each with its own io_context and server,
+    //              all binding the same port via SO_REUSEPORT.
+    //              Kernel distributes connections across workers.
+    //
+    // Windows:     Multiple threads share this server's io_context.
+    //              IOCP's GetQueuedCompletionStatus distributes completions.
+    //
+    // Blocks until all workers exit (e.g., via stop() or signal).
+    void serve_mt(unsigned int num_threads = 0);
+
 private:
     struct route_entry {
         method m;
@@ -68,8 +83,10 @@ private:
     };
 
     io_context& ctx_;
-    tcp::acceptor acceptor_;
+    std::unique_ptr<tcp::acceptor> acceptor_;  // Created lazily in serve()
     uint16_t port_;
+    std::string addr_;
+    bool reuse_port_;
     std::vector<route_entry> routes_;
     handler_fn default_handler_;
     push_provider push_provider_;

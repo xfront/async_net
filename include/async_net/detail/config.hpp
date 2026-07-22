@@ -76,6 +76,18 @@ inline int set_reuse_addr(socket_t fd) {
                        reinterpret_cast<const char*>(&opt), sizeof(opt));
 }
 
+// Set socket reuse port (for multi-process/multi-thread servers)
+inline int set_reuse_port(socket_t fd) {
+#ifdef SO_REUSEPORT
+    int opt = 1;
+    return ::setsockopt(fd, SOL_SOCKET, SO_REUSEPORT,
+                       reinterpret_cast<const char*>(&opt), sizeof(opt));
+#else
+    (void)fd;
+    return 0;  // No-op on platforms without SO_REUSEPORT
+#endif
+}
+
 // Last error code
 inline int last_error() {
 #ifdef ASYNC_NET_WINDOWS

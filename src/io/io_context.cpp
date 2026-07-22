@@ -29,13 +29,20 @@ namespace async_net {
 thread_local io_context* io_context::current_context_ = nullptr;
 
 io_context::io_context()
-    : backend_(create_default_backend()) {
+    : backend_(std::shared_ptr<IoBackend>(create_default_backend().release())) {
     if (!backend_) {
         throw std::runtime_error("Failed to create I/O backend");
     }
 }
 
 io_context::io_context(std::unique_ptr<IoBackend> backend)
+    : backend_(std::shared_ptr<IoBackend>(backend.release())) {
+    if (!backend_) {
+        throw std::runtime_error("I/O backend is null");
+    }
+}
+
+io_context::io_context(std::shared_ptr<IoBackend> backend)
     : backend_(std::move(backend)) {
     if (!backend_) {
         throw std::runtime_error("I/O backend is null");

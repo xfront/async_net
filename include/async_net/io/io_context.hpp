@@ -17,6 +17,13 @@ class io_context : public executor {
 public:
     io_context();
     explicit io_context(std::unique_ptr<IoBackend> backend);
+
+    // Shared backend mode: multiple io_context instances share the same backend.
+    // This enables multi-threaded event loop on Windows (IOCP distributes
+    // completions across threads calling GetQueuedCompletionStatus).
+    // All io_context instances sharing the backend must have the same lifetime.
+    explicit io_context(std::shared_ptr<IoBackend> backend);
+
     ~io_context();
 
     io_context(const io_context&) = delete;
@@ -148,7 +155,7 @@ private:
         bool operator>(const TimerEntry& o) const { return deadline > o.deadline; }
     };
 
-    std::unique_ptr<IoBackend> backend_;
+    std::shared_ptr<IoBackend> backend_;
     std::atomic<bool> stopped_{false};
     std::atomic<size_t> work_count_{0};
     size_t handlers_executed_ = 0;

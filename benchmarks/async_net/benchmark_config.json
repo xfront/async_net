@@ -1,0 +1,28 @@
+{
+  "framework": "async_net",
+  "tests": {
+    "default": {
+      "json_endpoint": "/json",
+      "plaintext_endpoint": "/plaintext",
+      "db_endpoint": "/db",
+      "query_endpoint": "/queries",
+      "fortune_endpoint": "/fortunes",
+      "update_endpoint": "/updates",
+      "cached_query_endpoint": "/cached-queries",
+      "port": 8080,
+      "approach": "Realistic",
+      "classification": "Platform",
+      "database": "None",
+      "framework": "async_net",
+      "language": "C++",
+      "flavor": "None",
+      "orm": "Raw",
+      "platform": "async_net",
+      "webserver": "async_net",
+      "os": "Linux",
+      "database_os": "Linux",
+      "display_name": "async_net",
+      "versus": "None"
+    }
+  }
+}

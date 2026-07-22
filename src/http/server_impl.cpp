@@ -22,8 +22,8 @@ namespace async_net::http {
 // Constructor
 // ---------------------------------------------------------------------------
 
-server::server(io_context& ctx, uint16_t port, const char* addr)
-    : ctx_(ctx), acceptor_(ctx, port, addr), port_(port) {
+server::server(io_context& ctx, uint16_t port, const char* addr, bool reuse_port)
+    : ctx_(ctx), port_(port), addr_(addr ? addr : "0.0.0.0"), reuse_port_(reuse_port) {
     // Default 404 handler
     default_handler_ = [](const request&) -> Task<response> {
         co_return response_not_found();
@@ -44,7 +44,9 @@ void server::set_push_provider(push_provider provider) {
 
 void server::stop() {
     running_ = false;
-    acceptor_.close();
+    if (acceptor_) {
+        acceptor_->close();
+    }
 }
 
 void server::cleanup_task(Task<void>* task) {
@@ -57,7 +59,11 @@ void server::cleanup_task(Task<void>* task) {
 // ---------------------------------------------------------------------------
 
 Task<void> server::serve() {
-    if (!acceptor_.is_open()) {
+    // Create acceptor lazily
+    if (!acceptor_) {
+        acceptor_ = std::make_unique<tcp::acceptor>(ctx_, port_, addr_.c_str(), reuse_port_);
+    }
+    if (!acceptor_->is_open()) {
         std::cerr << "[http::server] Failed to open acceptor" << std::endl;
         co_return;
     }
@@ -65,7 +71,7 @@ Task<void> server::serve() {
     std::cout << "[http::server] Listening on port" << std::endl;
 
     while (running_) {
-        auto sock = co_await acceptor_.async_accept();
+        auto sock = co_await acceptor_->async_accept();
         if (!sock.is_open()) {
             if (!running_) break;
             continue;
@@ -82,7 +88,11 @@ Task<void> server::serve() {
 
 #ifdef ASYNC_NET_HAS_SSL
 Task<void> server::serve_tls(ssl::context& ssl_ctx) {
-    if (!acceptor_.is_open()) {
+    // Create acceptor lazily
+    if (!acceptor_) {
+        acceptor_ = std::make_unique<tcp::acceptor>(ctx_, port_, addr_.c_str(), reuse_port_);
+    }
+    if (!acceptor_->is_open()) {
         std::cerr << "[http::server] Failed to open acceptor" << std::endl;
         co_return;
     }
@@ -90,7 +100,7 @@ Task<void> server::serve_tls(ssl::context& ssl_ctx) {
     std::cout << "[http::server] Listening on port (TLS)" << std::endl;
 
     while (running_) {
-        auto sock = co_await acceptor_.async_accept();
+        auto sock = co_await acceptor_->async_accept();
         if (!sock.is_open()) {
             if (!running_) break;
             continue;
@@ -117,7 +127,11 @@ Task<void> server::serve_h2(ssl::context& ssl_ctx) {
         return "";
     });
 
-    if (!acceptor_.is_open()) {
+    // Create acceptor lazily
+    if (!acceptor_) {
+        acceptor_ = std::make_unique<tcp::acceptor>(ctx_, port_, addr_.c_str(), reuse_port_);
+    }
+    if (!acceptor_->is_open()) {
         std::cerr << "[http::server] Failed to open acceptor" << std::endl;
         co_return;
     }
@@ -125,7 +139,7 @@ Task<void> server::serve_h2(ssl::context& ssl_ctx) {
     std::cout << "[http::server] Listening on port (H2 + TLS)" << std::endl;
 
     while (running_) {
-        auto sock = co_await acceptor_.async_accept();
+        auto sock = co_await acceptor_->async_accept();
         if (!sock.is_open()) {
             if (!running_) break;
             continue;
@@ -569,5 +583,85 @@ Task<void> server::serve_h3(const std::string& cert_file, const std::string& key
     udp_sock.close();
 }
 #endif
+
+// ---------------------------------------------------------------------------
+// Multi-threaded serving
+// ---------------------------------------------------------------------------
+
+void server::serve_mt(unsigned int num_threads) {
+    if (num_threads == 0) {
+        num_threads = std::thread::hardware_concurrency();
+        if (num_threads == 0) num_threads = 4;
+    }
+
+    if (num_threads <= 1) {
+        // Single-threaded: just serve normally
+        auto task = serve();
+        task.resume();
+        ctx_.run();
+        return;
+    }
+
+#ifdef _WIN32
+    // Windows: IOCP distributes completions across threads sharing one io_context.
+    // All threads call ctx_.run() on the same io_context.
+    std::cout << "[serve_mt] Windows IOCP mode: " << num_threads << " threads sharing backend" << std::endl;
+
+    auto task = serve();
+    task.resume();
+
+    std::atomic<int> ready{0};
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
+
+    for (unsigned int i = 0; i < num_threads; ++i) {
+        threads.emplace_back([this, &ready]() {
+            ready.fetch_add(1, std::memory_order_release);
+            ctx_.run();
+        });
+    }
+
+    while (ready.load(std::memory_order_acquire) < static_cast<int>(num_threads)) {
+        std::this_thread::yield();
+    }
+
+    for (auto& t : threads) {
+        t.join();
+    }
+#else
+    // Linux/macOS: SO_REUSEPORT — each worker has its own io_context + server
+    std::cout << "[serve_mt] SO_REUSEPORT mode: " << num_threads << " workers" << std::endl;
+
+    std::atomic<int> ready{0};
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
+
+    for (unsigned int i = 0; i < num_threads; ++i) {
+        threads.emplace_back([this, &ready]() {
+            // Each worker creates its own io_context + server
+            io_context worker_ctx;
+            server worker_srv(worker_ctx, port_, "0.0.0.0", /*reuse_port=*/true);
+
+            // Copy routes and handlers from this server
+            worker_srv.routes_ = this->routes_;
+            worker_srv.default_handler_ = this->default_handler_;
+            worker_srv.push_provider_ = this->push_provider_;
+
+            auto task = worker_srv.serve();
+            task.resume();
+            ready.fetch_add(1, std::memory_order_release);
+            worker_ctx.run();
+        });
+    }
+
+    while (ready.load(std::memory_order_acquire) < static_cast<int>(num_threads)) {
+        std::this_thread::yield();
+    }
+
+    for (auto& t : threads) {
+        t.join();
+    }
+#endif
+}
 
 } // namespace async_net::http

@@ -347,11 +347,11 @@ void IoUringBackend::async_read(socket_t fd, void* buf, size_t len, std::shared_
         return;
     }
 
-    sqe->opcode = IORING_OP_RECV;
+    sqe->opcode = IORING_OP_READ;
     sqe->fd = fd;
     sqe->addr = reinterpret_cast<__u64>(buf);
     sqe->len = static_cast<__u32>(len);
-    sqe->msg_flags = 0;
+    sqe->off = 0;
     sqe->user_data = reinterpret_cast<__u64>(ctx.get());
     // SQE queued — poll() will submit it
 }
@@ -368,11 +368,11 @@ void IoUringBackend::async_write(socket_t fd, const void* buf, size_t len, std::
         return;
     }
 
-    sqe->opcode = IORING_OP_SEND;
+    sqe->opcode = IORING_OP_WRITE;
     sqe->fd = fd;
     sqe->addr = reinterpret_cast<__u64>(buf);
     sqe->len = static_cast<__u32>(len);
-    sqe->msg_flags = MSG_NOSIGNAL;
+    sqe->off = 0;
     sqe->user_data = reinterpret_cast<__u64>(ctx.get());
 }
 

@@ -25,7 +25,7 @@
 #include <async_net/coroutine/task.hpp>
 
 #include <iostream>
-#include <signal.h>
+#include <csignal>
 
 using namespace async_net;
 using namespace async_net::http;

@@ -30,7 +30,7 @@
 #include <async_net/executor/coroutine.hpp>
 #include <async_net/executor/schedule.hpp>
 #include <iostream>
-#include <signal.h>
+#include <csignal>
 #include <random>
 #include <vector>
 #include <string>

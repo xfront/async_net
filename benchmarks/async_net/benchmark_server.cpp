@@ -29,7 +29,7 @@
 #include <iostream>
 #include <ctime>
 #include <thread>
-#include <signal.h>
+#include <csignal>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -48,7 +48,11 @@ static std::string g_cached_date;
 static void update_date_cache() {
     std::time_t now = std::time(nullptr);
     std::tm tm_buf;
+#ifdef ASYNC_NET_WINDOWS
+    gmtime_s(&tm_buf, &now);
+#else
     gmtime_r(&now, &tm_buf);
+#endif
     char buf[64];
     std::strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S GMT", &tm_buf);
     g_cached_date = buf;
@@ -338,7 +342,7 @@ static void setup_routes(server& srv) {
 // Worker process (runs one io_context + server)
 // ============================================================================
 
-static void run_worker(uint16_t port, int worker_id) {
+static void run_worker(uint16_t port, int worker_id, int threads) {
     // Each worker has its own io_context and server
     // With SO_REUSEPORT, kernel distributes connections across workers
     io_context ctx;
@@ -351,9 +355,7 @@ static void run_worker(uint16_t port, int worker_id) {
         std::cout << "Backend: " << ctx.backend().name() << std::endl;
     }
 
-    auto task = srv.serve();
-    task.resume();
-    ctx.run();
+    srv.run([](server& s) { return s.serve(); }, threads);
 }
 
 // ============================================================================
@@ -397,7 +399,7 @@ int main(int argc, char* argv[]) {
     // Windows: single worker (no fork support)
     std::cout << "[Windows] Running single worker (fork not supported)" << std::endl;
     try {
-        run_worker(port, 0);
+        run_worker(port, 0, 1);
     } catch (const std::exception& e) {
         std::cerr << "Exception: " << e.what() << std::endl;
         return 1;
@@ -407,7 +409,7 @@ int main(int argc, char* argv[]) {
     if (num_workers == 1) {
         // Single worker mode
         try {
-            run_worker(port, 0);
+            run_worker(port, 0, 0);
         } catch (const std::exception& e) {
             std::cerr << "Exception: " << e.what() << std::endl;
             return 1;
@@ -432,7 +434,7 @@ int main(int argc, char* argv[]) {
             } else if (pid == 0) {
                 // Child process
                 try {
-                    run_worker(port, static_cast<int>(i));
+                    run_worker(port, static_cast<int>(i), 1);
                 } catch (const std::exception& e) {
                     std::cerr << "Worker " << i << " exception: " << e.what() << std::endl;
                 }

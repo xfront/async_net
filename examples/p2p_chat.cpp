@@ -24,7 +24,7 @@
 
 #include <async_net/coroutine/task.hpp>
 #include <async_net/io/io_context.hpp>
-#include <async_net/net/ssl.hpp>
+#include <async_net/io/ssl.hpp>
 #include <async_net/p2p/tracker_client.hpp>
 #include <async_net/p2p/peer_connection.hpp>
 #include <async_net/executor/schedule.hpp>
@@ -41,7 +41,7 @@
 #include <thread>
 #include <atomic>
 #include <queue>
-#include <unistd.h>
+#include <async_net/detail/platform.hpp>
 
 using namespace async_net;
 

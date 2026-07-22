@@ -24,7 +24,7 @@
 #include <async_net/coroutine/spawn.hpp>
 #include <async_net/executor/schedule.hpp>
 #include <iostream>
-#include <signal.h>
+#include <csignal>
 #include <queue>
 #include <map>
 #include <set>

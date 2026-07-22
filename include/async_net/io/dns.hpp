@@ -11,8 +11,7 @@
 //   }
 
 #include "../coroutine/task.hpp"
-#include <sys/socket.h>
-#include <netinet/in.h>
+#include "../detail/config.hpp"
 #include <cstdint>
 #include <string>
 

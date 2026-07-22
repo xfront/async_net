@@ -20,7 +20,10 @@ extern "C" {
 #include <map>
 #include <random>
 #include <ctime>
+#include <chrono>
+#ifndef ASYNC_NET_WINDOWS
 #include <netdb.h>
+#endif
 
 
 namespace async_net::http {
@@ -36,9 +39,9 @@ static void gen_random(uint8_t* buf, size_t len) {
 }
 
 static uint64_t now_ms() {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return static_cast<uint64_t>(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+    auto now = std::chrono::steady_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch());
+    return static_cast<uint64_t>(ms.count());
 }
 
 // ============================================================================

@@ -238,7 +238,7 @@ void EpollBackend::poll(int timeout_ms) {
                 auto it = read_ops_.find(fd);
                 if (it != read_ops_.end()) {
                     if (it->second.type == OpType::Read) {
-                        ssize_t bytes = ::recv(fd, it->second.buf, it->second.len, 0);
+                        ssize_t bytes = ::read(fd, it->second.buf, it->second.len);
                         if (bytes >= 0) {
                             it->second.ctx->complete(bytes, 0);
                             to_resume.push_back(it->second.ctx);
@@ -302,7 +302,7 @@ void EpollBackend::poll(int timeout_ms) {
                                              reinterpret_cast<const struct sockaddr*>(&it->second.dest_addr),
                                              it->second.dest_len);
                         } else {
-                            bytes = ::send(fd, it->second.buf, it->second.len, MSG_NOSIGNAL);
+                            bytes = ::write(fd, it->second.buf, it->second.len);
                         }
                         if (bytes >= 0) {
                             it->second.ctx->complete(bytes, 0);
@@ -422,7 +422,7 @@ void EpollBackend::try_complete_read(socket_t fd) {
             update_events(fd, write_ops_.count(fd) ? EPOLLOUT : 0);
         }
     } else {
-        ssize_t n = ::recv(fd, it->second.buf, it->second.len, 0);
+        ssize_t n = ::read(fd, it->second.buf, it->second.len);
         if (n >= 0) {
             it->second.ctx->complete(n, 0);
             read_ops_.erase(it);
@@ -447,7 +447,7 @@ void EpollBackend::try_complete_write(socket_t fd) {
                      reinterpret_cast<const struct sockaddr*>(&it->second.dest_addr),
                      it->second.dest_len);
     } else {
-        n = ::send(fd, it->second.buf, it->second.len, MSG_NOSIGNAL);
+        n = ::write(fd, it->second.buf, it->second.len);
     }
     if (n >= 0) {
         it->second.ctx->complete(n, 0);

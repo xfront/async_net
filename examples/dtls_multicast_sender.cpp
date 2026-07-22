@@ -15,10 +15,11 @@
 
 #include <async_net/coroutine/task.hpp>
 #include <async_net/io/io_context.hpp>
-#include <async_net/net/udp.hpp>
-#include <async_net/net/ssl.hpp>
-#include <async_net/net/dtls.hpp>
+#include <async_net/io/udp.hpp>
+#include <async_net/io/ssl.hpp>
+#include <async_net/io/dtls.hpp>
 #include <async_net/crypto/aes_gcm.hpp>
+#include <async_net/detail/platform.hpp>
 
 #include <cstdio>
 #include <cstring>
@@ -27,9 +28,6 @@
 #include <chrono>
 #include <atomic>
 #include <vector>
-#include <unistd.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
 
 using namespace async_net;
 using namespace async_net::crypto;
@@ -64,18 +62,14 @@ Task<void> run_sender(io_context& ctx,
     }
 
     // Create a raw blocking UDP socket for DTLS control channel
-    int ctrl_fd = static_cast<int>(::socket(AF_INET, SOCK_DGRAM, 0));
+    int ctrl_fd = static_cast<int>(platform::create_udp_socket());
     if (ctrl_fd < 0) {
         fprintf(stderr, "Failed to create control socket\n");
         co_return;
     }
-    {
-        int opt = 1;
-        setsockopt(ctrl_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-#ifdef SO_REUSEPORT
-        setsockopt(ctrl_fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
-#endif
-    }
+    platform::set_reuse_addr(static_cast<socket_t>(ctrl_fd));
+    platform::set_reuse_port(static_cast<socket_t>(ctrl_fd));
+
     {
         struct sockaddr_in bind_addr{};
         bind_addr.sin_family = AF_INET;
@@ -84,7 +78,7 @@ Task<void> run_sender(io_context& ctx,
         if (::bind(ctrl_fd, reinterpret_cast<struct sockaddr*>(&bind_addr),
                    sizeof(bind_addr)) != 0) {
             fprintf(stderr, "Failed to bind control port %u\n", control_port);
-            ::close(ctrl_fd);
+            platform::close_socket(static_cast<socket_t>(ctrl_fd));
             co_return;
         }
     }
@@ -115,7 +109,7 @@ Task<void> run_sender(io_context& ctx,
             FD_ZERO(&rfds);
             FD_SET(ctrl_fd, &rfds);
             struct timeval tv = {1, 0};
-            int sel = select(ctrl_fd + 1, &rfds, nullptr, nullptr, &tv);
+            int sel = platform::socket_select(ctrl_fd + 1, &rfds, nullptr, nullptr, &tv);
             if (sel <= 0) continue; // timeout or error
 
             // Create DTLS stream for this receiver

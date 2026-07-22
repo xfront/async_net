@@ -1,8 +1,8 @@
 #pragma once
 
 #include "../io/io_context.hpp"
-#include "../net/dtls.hpp"
-#include "../net/ssl.hpp"
+#include "../io/dtls.hpp"
+#include "../io/ssl.hpp"
 #include "peer.hpp"
 #include <cstdint>
 #include <memory>

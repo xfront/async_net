@@ -7,14 +7,14 @@
 #include <async_net/grpc/interceptor.hpp>
 #include <async_net/coroutine/task.hpp>
 #include <async_net/io/io_context.hpp>
-#include <async_net/net/tcp.hpp>
+#include <async_net/io/tcp.hpp>
 #include <functional>
 #include <string>
 #include <map>
 #include <memory>
 
 #ifdef ASYNC_NET_HAS_SSL
-#include <async_net/net/ssl.hpp>
+#include <async_net/io/ssl.hpp>
 #endif
 
 namespace async_net::grpc {

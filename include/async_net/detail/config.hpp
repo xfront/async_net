@@ -19,6 +19,9 @@
 
 // Socket type
 #ifdef ASYNC_NET_WINDOWS
+    #ifndef NOMINMAX
+    #define NOMINMAX  // Prevent windows.h from defining min/max macros
+    #endif
     #include <winsock2.h>
     #include <ws2tcpip.h>
     #include <mswsock.h>

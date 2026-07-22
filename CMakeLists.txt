@@ -31,6 +31,11 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     add_compile_options(-fcoroutines)
 endif()
 
+# MSVC: treat source files as UTF-8
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 # Statically link C++ runtime on Windows (avoid MinGW DLL dependencies)
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     add_link_options(-static -static-libgcc -static-libstdc++)
@@ -116,7 +121,7 @@ endif()
 # Library sources - platform specific
 set(ASYNC_NET_SOURCES
     src/io/io_context.cpp
-    src/net/dns.cpp
+        src/io/dns.cpp
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

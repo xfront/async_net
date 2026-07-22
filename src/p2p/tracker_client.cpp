@@ -1,5 +1,5 @@
 #include "../../include/async_net/p2p/tracker_client.hpp"
-#include "../../include/async_net/net/buffer.hpp"
+#include "../../include/async_net/io/buffer.hpp"
 #include <sstream>
 
 namespace async_net::p2p {

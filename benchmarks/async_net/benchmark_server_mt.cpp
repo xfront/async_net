@@ -18,9 +18,8 @@
 
 #include <async_net/http/server.hpp>
 #include <async_net/io/io_context.hpp>
-#include <async_net/net/tcp.hpp>
+#include <async_net/io/tcp.hpp>
 #include <algorithm>
-#include <array>
 #include <random>
 #include <string>
 #include <vector>
@@ -28,8 +27,6 @@
 #include <charconv>
 #include <iostream>
 #include <ctime>
-#include <thread>
-#include <atomic>
 #include <mutex>
 #include <memory>
 
@@ -45,7 +42,11 @@ static std::string g_cached_date;
 static void update_date_cache() {
     std::time_t now = std::time(nullptr);
     std::tm tm_buf;
+#ifdef ASYNC_NET_WINDOWS
+    gmtime_s(&tm_buf, &now);
+#else
     gmtime_r(&now, &tm_buf);
+#endif
     char buf[64];
     std::strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M %S GMT", &tm_buf);
     g_cached_date = buf;
@@ -307,13 +308,10 @@ int main(int argc, char* argv[]) {
     uint16_t port = 8080;
     if (argc > 1) port = static_cast<uint16_t>(std::atoi(argv[1]));
 
-    unsigned int num_workers = std::thread::hardware_concurrency();
-    if (num_workers == 0) num_workers = 4;
-
+    unsigned int num_workers = 0;
     for (int i = 2; i < argc; ++i) {
         if (std::strcmp(argv[i], "-w") == 0 && i + 1 < argc) {
             num_workers = static_cast<unsigned int>(std::atoi(argv[++i]));
-            if (num_workers == 0) num_workers = 1;
         }
     }
 
@@ -343,7 +341,7 @@ int main(int argc, char* argv[]) {
     // Multi-threaded serving — automatically selects best strategy per platform:
     //   Linux/macOS: SO_REUSEPORT + per-worker io_context/server
     //   Windows:     Shared IOCP backend + multi-threaded event loop
-    srv.serve_mt(num_workers);
+    srv.run([](server& s) { return s.serve(); }, num_workers);
 
     return 0;
 }

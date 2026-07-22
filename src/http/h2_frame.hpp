@@ -80,7 +80,7 @@ namespace flag {
 // ---------------------------------------------------------------------------
 
 enum class error_code : uint32_t {
-    NO_ERROR            = 0x0,
+    NO_ERR              = 0x0,
     PROTOCOL_ERROR      = 0x1,
     INTERNAL_ERROR      = 0x2,
     FLOW_CONTROL_ERROR  = 0x3,
@@ -321,7 +321,7 @@ inline push_promise_data parse_push_promise(const std::string& payload) {
 // Parse GOAWAY from payload
 struct goaway_data {
     int32_t last_stream_id = 0;
-    error_code ec = error_code::NO_ERROR;
+    error_code ec = error_code::NO_ERR;
     std::string debug_data;
 };
 

@@ -7,15 +7,12 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/bio.h>
+#include <async_net/detail/platform.hpp>
 #ifndef ASYNC_NET_WINDOWS
-#include <sys/socket.h>
 #include <sys/select.h>
-#include <arpa/inet.h>
-#include <unistd.h>
 #endif
 #include <cstdio>
 #include <cstring>
-#include <cerrno>
 
 namespace async_net::net::dtls_backend {
 
@@ -105,8 +102,7 @@ int handshake(dtls_handle* h, int fd) {
         FD_SET(fd, &rfds);
         if (ret == WANT_WRITE) FD_SET(fd, &wfds);
         struct timeval tv = {1, 0};
-        int nfds = fd + 1;
-        int sel = ::select(nfds, &rfds, (ret == WANT_WRITE) ? &wfds : nullptr, nullptr, &tv);
+        int sel = platform::socket_select(fd + 1, &rfds, (ret == WANT_WRITE) ? &wfds : nullptr, nullptr, &tv);
         if (sel < 0) return ERROR;
     }
     return ERROR;
@@ -116,8 +112,8 @@ int set_peer_from_socket(dtls_handle* h, int fd) {
     struct sockaddr_in peer_addr{};
     socklen_t addr_len = sizeof(peer_addr);
     uint8_t peek_buf[1];
-    ssize_t n = ::recvfrom(fd, peek_buf, 1, MSG_PEEK,
-                           reinterpret_cast<struct sockaddr*>(&peer_addr), &addr_len);
+    ssize_t n = platform::socket_recvfrom(fd, peek_buf, 1, MSG_PEEK,
+                                          reinterpret_cast<struct sockaddr*>(&peer_addr), &addr_len);
     if (n <= 0) return ERROR;
 
     BIO* bio = SSL_get_wbio(h->ssl);

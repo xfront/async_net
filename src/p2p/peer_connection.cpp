@@ -1,15 +1,7 @@
 #include "../../include/async_net/p2p/peer_connection.hpp"
 #include "../../include/async_net/executor/schedule.hpp"
-#include "../../include/async_net/detail/config.hpp"
-#ifndef ASYNC_NET_WINDOWS
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <sys/socket.h>
-#include <sys/select.h>
-#include <unistd.h>
-#endif
+#include "../../include/async_net/detail/platform.hpp"
 #include <cstring>
-#include <cerrno>
 
 namespace async_net::p2p {
 
@@ -21,13 +13,12 @@ peer_connection::~peer_connection() {
 }
 
 static int create_nonblocking_udp_socket(uint16_t port) {
-    int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
-    if (fd < 0) return -1;
+    socket_t fd = platform::create_udp_socket();
+    if (fd == invalid_socket) return -1;
 
-    int opt = 1;
-    ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    platform::set_reuse_addr(fd);
 #ifdef SO_REUSEPORT
-    ::setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+    platform::set_reuse_port(fd);
 #endif
 
     struct sockaddr_in addr{};
@@ -35,16 +26,15 @@ static int create_nonblocking_udp_socket(uint16_t port) {
     addr.sin_port = htons(port);
     addr.sin_addr.s_addr = INADDR_ANY;
 
-    if (::bind(fd, reinterpret_cast<const struct sockaddr*>(&addr), sizeof(addr)) < 0) {
-        ::close(fd);
+    if (platform::socket_bind(fd, reinterpret_cast<const struct sockaddr*>(&addr), sizeof(addr)) < 0) {
+        platform::close_socket(fd);
         return -1;
     }
 
     // Set non-blocking
-    int flags = ::fcntl(fd, F_GETFL, 0);
-    if (flags >= 0) ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    platform::set_nonblocking(fd);
 
-    return fd;
+    return static_cast<int>(fd);
 }
 
 // Wait for socket readiness using select(), as a coroutine.
@@ -61,9 +51,9 @@ static Task<bool> wait_for_socket(int fd, bool writable,
         tv.tv_usec = 50000;  // 50ms poll for select
         int ret;
         if (writable)
-            ret = ::select(fd + 1, nullptr, &fds, nullptr, &tv);
+            ret = platform::socket_select(fd + 1, nullptr, &fds, nullptr, &tv);
         else
-            ret = ::select(fd + 1, &fds, nullptr, nullptr, &tv);
+            ret = platform::socket_select(fd + 1, &fds, nullptr, nullptr, &tv);
 
         if (ret > 0 && FD_ISSET(fd, &fds)) co_return true;
 
@@ -87,7 +77,7 @@ Task<bool> peer_connection::connect_to(const peer_info& remote, uint16_t local_u
                                               remote.public_address, remote.udp_port);
     if (!dtls_ok) {
         std::fprintf(stderr, "[p2p] DTLS handshake failed with peer '%s'\n", remote.id.c_str());
-        ::close(fd);
+        platform::close_socket(static_cast<socket_t>(fd));
         co_return false;
     }
 
@@ -110,7 +100,7 @@ Task<bool> peer_connection::accept_from(const peer_info& remote, uint16_t local_
                                               remote.public_address, remote.udp_port);
     if (!dtls_ok) {
         std::fprintf(stderr, "[p2p] DTLS handshake failed with peer '%s'\n", remote.id.c_str());
-        ::close(fd);
+        platform::close_socket(static_cast<socket_t>(fd));
         co_return false;
     }
 
@@ -240,7 +230,7 @@ void peer_connection::close() {
         dtls_.reset();
     }
     if (socket_fd_ >= 0) {
-        ::close(socket_fd_);
+        platform::close_socket(static_cast<socket_t>(socket_fd_));
         socket_fd_ = -1;
     }
     connected_ = false;

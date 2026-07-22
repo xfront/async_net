@@ -2,8 +2,8 @@
 // Primary: pure async UDP + coroutines (no blocking)
 // Fallback: thread-based getaddrinfo (for compatibility with strict DNS servers)
 
-#include <async_net/net/dns.hpp>
-#include <async_net/net/udp.hpp>
+#include <async_net/io/dns.hpp>
+#include <async_net/io/udp.hpp>
 #include <async_net/io/io_context.hpp>
 #include <async_net/executor/schedule.hpp>
 #include <cstring>

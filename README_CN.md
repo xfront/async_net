@@ -345,7 +345,7 @@ ctest --output-on-failure
 ```cpp
 #include <async_net/coroutine/task.hpp>
 #include <async_net/io/io_context.hpp>
-#include <async_net/net/tcp.hpp>
+#include <async_net/io/tcp.hpp>
 #include <cstdio>
 #include <cstring>
 
@@ -383,7 +383,7 @@ int main() {
 ```cpp
 #include <async_net/coroutine/task.hpp>
 #include <async_net/io/io_context.hpp>
-#include <async_net/net/tcp.hpp>
+#include <async_net/io/tcp.hpp>
 #include <cstdio>
 
 using namespace async_net;

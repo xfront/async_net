@@ -10,7 +10,7 @@
 
 #ifdef ASYNC_NET_HAS_HTTP3
 #include <async_net/http/http3_session.hpp>
-#include <async_net/net/udp.hpp>
+#include <async_net/io/udp.hpp>
 #ifndef ASYNC_NET_WINDOWS
 #include <arpa/inet.h>
 #endif
@@ -653,15 +653,15 @@ Task<void> server::serve_h3(const std::string& cert_file, const std::string& key
 // Multi-threaded serving
 // ---------------------------------------------------------------------------
 
-void server::serve_mt(unsigned int num_threads) {
+void server::run(std::function<Task<void>(server&)> serve_fn, unsigned int num_threads) {
     if (num_threads == 0) {
         num_threads = std::thread::hardware_concurrency();
         if (num_threads == 0) num_threads = 4;
     }
 
     if (num_threads <= 1) {
-        // Single-threaded: just serve normally
-        auto task = serve();
+        // Single-threaded: just serve
+        auto task = serve_fn(*this);
         task.resume();
         ctx_.run();
         return;
@@ -672,16 +672,15 @@ void server::serve_mt(unsigned int num_threads) {
         // Backend distributes events across threads (poll() is thread-safe).
         std::cout << "[serve_mt] Concurrent-poll (" << ctx_.backend().name()
                   << "): " << num_threads << " threads\n";
-        auto task = serve();
+        auto task = serve_fn(*this);
         task.resume();
         ctx_.run_mt(num_threads);
     } else {
         // io_uring (or other non-concurrent backends):
         // SO_REUSEPORT — each worker has its own io_context + server.
-        // Delegates to run_mt() with a worker_factory callback.
         std::cout << "[serve_mt] SO_REUSEPORT (" << ctx_.backend().name()
                   << "): " << num_threads << " workers\n";
-        ctx_.run_mt(num_threads, [this](io_context& wctx) {
+        ctx_.run_mt(num_threads, [this, &serve_fn](io_context& wctx) {
             // Each worker creates its own io_context + server
             server wsrv(wctx, port_, addr_.c_str(), /*reuse_port=*/true);
             // Copy routes and handlers from this server
@@ -689,7 +688,7 @@ void server::serve_mt(unsigned int num_threads) {
             wsrv.ws_routes_ = this->ws_routes_;
             wsrv.default_handler_ = this->default_handler_;
             wsrv.push_provider_ = this->push_provider_;
-            auto task = wsrv.serve();
+            auto task = serve_fn(wsrv);
             task.resume();
             wctx.run();
         });

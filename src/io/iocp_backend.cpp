@@ -53,9 +53,9 @@ bool IocpBackend::register_socket(socket_t fd) {
     }
 
     HANDLE result = CreateIoCompletionPort(
-        reinterpret_cast<HANDLE>(fd),
+        reinterpret_cast<HANDLE>(static_cast<uintptr_t>(fd)),
         iocp_handle_,
-        reinterpret_cast<ULONG_PTR>(fd),
+        static_cast<ULONG_PTR>(fd),
         0
     );
 
@@ -363,8 +363,6 @@ void IocpBackend::poll(int timeout_ms) {
     }
 }
 
-} // namespace async_net
-
 void IocpBackend::wake() {
     if (iocp_handle_ != nullptr) {
         PostQueuedCompletionStatus(
@@ -375,5 +373,7 @@ void IocpBackend::wake() {
         );
     }
 }
+
+} // namespace async_net
 
 #endif // ASYNC_NET_WINDOWS

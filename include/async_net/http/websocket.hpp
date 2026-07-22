@@ -3,8 +3,8 @@
 // WebSocket protocol implementation (RFC 6455)
 // Provides: frame codec, handshake, and websocket_connection for async I/O.
 
-#include <async_net/net/tcp.hpp>
-#include <async_net/net/buffer.hpp>
+#include <async_net/io/tcp.hpp>
+#include <async_net/io/buffer.hpp>
 #include <async_net/coroutine/task.hpp>
 #include <async_net/http/types.hpp>
 #include <cstdint>

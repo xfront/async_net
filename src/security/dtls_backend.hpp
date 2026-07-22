@@ -4,6 +4,7 @@
 // Each SSL backend provides an implementation.
 // This file is NOT part of the public API.
 
+#include <async_net/detail/config.hpp>
 #include <cstdint>
 #include <cstddef>
 
@@ -13,7 +14,6 @@ namespace async_net::net::dtls_backend {
 constexpr int OK             =  0;
 constexpr int WANT_READ      =  1;
 constexpr int WANT_WRITE     =  2;
-constexpr int ERROR          = -1;
 
 /// Opaque handle holding SSL state + I/O context + want flags.
 struct dtls_handle;

@@ -4,7 +4,7 @@
 
 #ifdef ASYNC_NET_HAS_HTTP3
 #include <async_net/http/http3_session.hpp>
-#include <async_net/net/udp.hpp>
+#include <async_net/io/udp.hpp>
 #ifndef ASYNC_NET_WINDOWS
 #include <arpa/inet.h>
 #endif
@@ -663,10 +663,16 @@ Task<response> client::send_h3(const std::string& host, uint16_t port, request r
                sizeof(bind_addr));
 
         // Set receive timeout
+#ifdef ASYNC_NET_WINDOWS
+        DWORD timeout_ms = 5000;
+        setsockopt(h3->sock->native_handle(), SOL_SOCKET, SO_RCVTIMEO,
+                   reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+#else
         struct timeval tv;
         tv.tv_sec = 5;
         tv.tv_usec = 0;
         setsockopt(h3->sock->native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+#endif
 
         http3_session::config cfg;
         cfg.max_streams = 10;

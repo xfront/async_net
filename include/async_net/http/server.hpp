@@ -5,7 +5,7 @@
 #include <async_net/http/websocket.hpp>
 #include <async_net/coroutine/task.hpp>
 #include <async_net/io/io_context.hpp>
-#include <async_net/net/tcp.hpp>
+#include <async_net/io/tcp.hpp>
 #include <functional>
 #include <string>
 #include <vector>
@@ -16,7 +16,7 @@
 #include <memory>
 
 #ifdef ASYNC_NET_HAS_SSL
-#include <async_net/net/ssl.hpp>
+#include <async_net/io/ssl.hpp>
 #endif
 
 #ifdef ASYNC_NET_HAS_HTTP3
@@ -69,15 +69,17 @@ public:
 
     // Multi-threaded serving — utilizes multiple CPU cores.
     //
-    // Linux/macOS: Creates N workers, each with its own io_context and server,
-    //              all binding the same port via SO_REUSEPORT.
-    //              Kernel distributes connections across workers.
+    // serve_fn: a function that takes a server& and returns Task<void>.
+    //           e.g., [](server& s) { return s.serve(); }
+    //                [](server& s) { return s.serve_tls(ssl_ctx); }
+    //                [](server& s) { return s.serve_h2(ssl_ctx); }
     //
-    // Windows:     Multiple threads share this server's io_context.
-    //              IOCP's GetQueuedCompletionStatus distributes completions.
+    // Linux/epoll/kqueue: N threads share this server's io_context.
+    // Linux/io_uring:     SO_REUSEPORT + per-worker io_context/server.
+    // Windows/IOCP:       N threads share this server's io_context.
     //
     // Blocks until all workers exit (e.g., via stop() or signal).
-    void serve_mt(unsigned int num_threads = 0);
+    void run(std::function<Task<void>(server&)> serve_fn, unsigned int num_threads = 0);
 
 private:
     struct route_entry {

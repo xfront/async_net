@@ -22,7 +22,7 @@
 #include <async_net/coroutine/task.hpp>
 
 #include <iostream>
-#include <signal.h>
+#include <csignal>
 #include <memory>
 #include <vector>
 

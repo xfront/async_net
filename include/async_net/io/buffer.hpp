@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../detail/config.hpp"
 #include <cstddef>
 #include <cstring>
 #include <vector>

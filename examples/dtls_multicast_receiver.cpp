@@ -16,18 +16,16 @@
 
 #include <async_net/coroutine/task.hpp>
 #include <async_net/io/io_context.hpp>
-#include <async_net/net/udp.hpp>
-#include <async_net/net/ssl.hpp>
-#include <async_net/net/dtls.hpp>
+#include <async_net/io/udp.hpp>
+#include <async_net/io/ssl.hpp>
+#include <async_net/io/dtls.hpp>
 #include <async_net/crypto/aes_gcm.hpp>
+#include <async_net/detail/platform.hpp>
 
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
 #include <vector>
-#include <unistd.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
 
 using namespace async_net;
 using namespace async_net::crypto;
@@ -60,13 +58,13 @@ Task<void> run_receiver(io_context& ctx,
     sender_addr.sin_port = htons(control_port);
     if (::inet_pton(AF_INET, "127.0.0.1", &sender_addr.sin_addr) <= 0) {
         fprintf(stderr, "Invalid sender address\n");
-        ::close(ctrl_fd);
+        platform::close_socket(static_cast<socket_t>(ctrl_fd));
         co_return;
     }
     if (::connect(ctrl_fd, reinterpret_cast<struct sockaddr*>(&sender_addr),
                   sizeof(sender_addr)) != 0) {
         fprintf(stderr, "Failed to connect control socket to 127.0.0.1:%u\n", control_port);
-        ::close(ctrl_fd);
+        platform::close_socket(static_cast<socket_t>(ctrl_fd));
         co_return;
     }
 
@@ -77,7 +75,7 @@ Task<void> run_receiver(io_context& ctx,
         dtls_stream stream(ctrl_fd, dtls_ctx, /*is_server=*/false);
         if (stream.handshake() != 0) {
             fprintf(stderr, "DTLS handshake failed\n");
-            ::close(ctrl_fd);
+            platform::close_socket(static_cast<socket_t>(ctrl_fd));
             co_return;
         }
         printf("[Control] DTLS handshake OK, sender verified\n");
@@ -88,7 +86,7 @@ Task<void> run_receiver(io_context& ctx,
             fprintf(stderr, "Failed to receive group key (got %d bytes, expected %zu)\n",
                     key_len, aes_gcm::KEY_LEN);
             stream.shutdown();
-            ::close(ctrl_fd);
+            platform::close_socket(static_cast<socket_t>(ctrl_fd));
             co_return;
         }
         printf("[Control] Received group key (%d bytes)\n", key_len);
@@ -96,7 +94,7 @@ Task<void> run_receiver(io_context& ctx,
         stream.shutdown();
     }
     // dtls_stream destroyed, close control socket
-    ::close(ctrl_fd);
+    platform::close_socket(static_cast<socket_t>(ctrl_fd));
 
     // ---- 2. Join multicast group, receive encrypted data ----
     udp::socket data_sock(ctx);

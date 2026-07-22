@@ -8,7 +8,7 @@
 #include <cstring>
 
 #ifdef ASYNC_NET_HAS_SSL
-#include <async_net/net/ssl.hpp>
+#include <async_net/io/ssl.hpp>
 #endif
 
 namespace async_net::grpc {

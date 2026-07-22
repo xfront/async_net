@@ -223,7 +223,7 @@ void KqueueBackend::try_complete_read(socket_t fd, std::vector<OperationContext*
     auto it = read_ops_.find(fd);
     if (it == read_ops_.end()) return;
 
-    ssize_t n = ::recv(fd, it->second.buf, it->second.len, 0);
+    ssize_t n = ::read(fd, it->second.buf, it->second.len);
     if (n >= 0) {
         it->second.ctx->complete(n, 0);
         to_resume.push_back(it->second.ctx.get());
@@ -242,7 +242,7 @@ void KqueueBackend::try_complete_write(socket_t fd, std::vector<OperationContext
     auto it = write_ops_.find(fd);
     if (it == write_ops_.end()) return;
 
-    ssize_t n = ::send(fd, it->second.buf, it->second.len, 0);
+    ssize_t n = ::write(fd, it->second.buf, it->second.len);
     if (n >= 0) {
         it->second.ctx->complete(n, 0);
         to_resume.push_back(it->second.ctx.get());

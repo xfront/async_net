@@ -1,4 +1,4 @@
-#include <async_net/net/ssl.hpp>
+#include <async_net/io/ssl.hpp>
 
 #ifdef ASYNC_NET_HAS_SSL
 

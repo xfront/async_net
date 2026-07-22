@@ -171,6 +171,7 @@ void IoUringBackend::setup_ring(unsigned ring_size) {
             sqe->fd = wake_fd_;
             sqe->poll32_events = POLLIN;
             sqe->user_data = WAKEUP_USER_DATA;
+            // Submit immediately so the poll is armed
             submit_sqes();
         }
     }

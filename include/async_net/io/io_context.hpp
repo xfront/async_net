@@ -42,6 +42,9 @@ public:
     // Stop the event loop
     void stop();
 
+    // Wake up the backend from poll() (for cross-thread notifications)
+    void wake() { if (backend_) backend_->wake(); }
+
     // Check if stopped
     bool stopped() const { return stopped_.load(std::memory_order_relaxed); }
 
@@ -119,6 +122,7 @@ public:
         void release() noexcept {
             if (ctx_) {
                 ctx_->work_count_.fetch_sub(1, std::memory_order_relaxed);
+                ctx_->wake();  // Wake up poll() so it can check work_count_
                 ctx_ = nullptr;
             }
         }

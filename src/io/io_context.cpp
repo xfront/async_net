@@ -110,6 +110,8 @@ size_t io_context::poll() {
 
 void io_context::stop() {
     stopped_.store(true, std::memory_order_relaxed);
+    // Wake up the backend if it's blocked in poll()
+    backend_->wake();
 }
 
 void io_context::post(std::function<void()> func) {
@@ -177,7 +179,29 @@ void io_context::execute_pending() {
 // Factory function for default backend
 std::unique_ptr<IoBackend> create_default_backend() {
 #ifdef ASYNC_NET_LINUX
-    return std::make_unique<EpollBackend>();
+    // Check if user wants to force a specific backend via environment variable
+    const char* backend_env = std::getenv("ASYNC_NET_BACKEND");
+    if (backend_env) {
+        std::string backend_name = backend_env;
+        if (backend_name == "epoll") {
+            return std::make_unique<EpollBackend>();
+        } else if (backend_name == "io_uring") {
+            try {
+                return std::make_unique<IoUringBackend>();
+            } catch (const std::exception& e) {
+                // Fall through to auto-detection
+            }
+        }
+    }
+
+    // Auto-detect: try io_uring first (requires kernel 5.1+), fall back to epoll
+    try {
+        auto backend = std::make_unique<IoUringBackend>();
+        return backend;
+    } catch (const std::exception&) {
+        // io_uring not supported by kernel, fall back to epoll
+        return std::make_unique<EpollBackend>();
+    }
 #elif defined(ASYNC_NET_MACOS) || defined(ASYNC_NET_BSD)
     return std::make_unique<KqueueBackend>();
 #elif defined(ASYNC_NET_WINDOWS)

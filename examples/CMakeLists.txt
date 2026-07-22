@@ -1,9 +1,3 @@
-# Linux-only examples (io_uring)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    add_executable(echo_server_iouring echo_server_iouring.cpp)
-    target_link_libraries(echo_server_iouring PRIVATE async_net)
-    target_include_directories(echo_server_iouring PRIVATE ${CMAKE_SOURCE_DIR}/src)
-endif()
 
 # UDP broadcast
 add_executable(broadcast_sender broadcast_sender.cpp)
@@ -66,4 +60,21 @@ if(ASYNC_NET_HAS_GRPC)
     add_executable(grpc_echo_client grpc_echo_client.cpp)
     target_link_libraries(grpc_echo_client PRIVATE async_net grpc_echo_proto)
     target_include_directories(grpc_echo_client PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated_grpc_echo_proto)
+endif()
+
+# FRPC examples (with FlatBuffers)
+if(ASYNC_NET_HAS_FRPC)
+    # Generate C++ code from echo.fbs via flatc
+    async_net_flatbuffers_library(
+        NAME frpc_echo_fbs
+        FBS_FILES frpc/echo.fbs
+    )
+
+    add_executable(frpc_echo_server frpc_echo_server.cpp)
+    target_link_libraries(frpc_echo_server PRIVATE async_net frpc_echo_fbs)
+    target_include_directories(frpc_echo_server PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated_frpc_echo_fbs)
+
+    add_executable(frpc_echo_client frpc_echo_client.cpp)
+    target_link_libraries(frpc_echo_client PRIVATE async_net frpc_echo_fbs)
+    target_include_directories(frpc_echo_client PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated_frpc_echo_fbs)
 endif()

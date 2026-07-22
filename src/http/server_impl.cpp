@@ -34,6 +34,10 @@ void server::route(method m, const std::string& path, handler_fn handler) {
     routes_.push_back({m, path, std::move(handler)});
 }
 
+void server::ws_route(const std::string& path, ws::ws_handler_fn handler) {
+    ws_routes_.push_back({path, std::move(handler)});
+}
+
 void server::default_handler(handler_fn handler) {
     default_handler_ = std::move(handler);
 }
@@ -242,6 +246,16 @@ Task<void> server::handle_connection(tcp::socket sock) {
         auto req = co_await read_request(sock);
         if (!req.has_value()) break;
 
+        // Check for WebSocket upgrade
+        if (ws::is_websocket_upgrade(*req)) {
+            auto* ws_handler = find_ws_handler(req->path);
+            if (ws_handler) {
+                co_await handle_websocket(sock, *req, *ws_handler);
+                co_return;  // WebSocket connection is done
+            }
+            // No matching WS route — fall through to HTTP dispatch (will likely 404)
+        }
+
         bool keep_alive = req->hdrs.is_keep_alive() && req->ver == version::HTTP_11;
 
         // Dispatch to handler
@@ -266,6 +280,42 @@ Task<void> server::handle_connection(tcp::socket sock) {
         if (!keep_alive) break;
     }
 
+    sock.close();
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket support
+// ---------------------------------------------------------------------------
+
+ws::ws_handler_fn* server::find_ws_handler(const std::string& path) {
+    for (auto& r : ws_routes_) {
+        if (r.path == path) {
+            return &r.handler;
+        }
+    }
+    return nullptr;
+}
+
+Task<void> server::handle_websocket(tcp::socket& sock, const request& upgrade_req,
+                                     ws::ws_handler_fn handler) {
+    // 1. Send 101 Switching Protocols response
+    std::string handshake = ws::build_handshake_response(upgrade_req);
+    size_t total_sent = 0;
+    while (total_sent < handshake.size()) {
+        auto n = co_await sock.async_write_some(
+            const_buffer(handshake.data() + total_sent, handshake.size() - total_sent));
+        if (n <= 0) {
+            sock.close();
+            co_return;
+        }
+        total_sent += static_cast<size_t>(n);
+    }
+
+    // 2. Create websocket_connection and invoke user handler
+    ws::websocket_connection ws_conn(sock);
+    co_await handler(ws_conn);
+
+    // 3. Close connection
     sock.close();
 }
 
@@ -636,6 +686,7 @@ void server::serve_mt(unsigned int num_threads) {
             server wsrv(wctx, port_, addr_.c_str(), /*reuse_port=*/true);
             // Copy routes and handlers from this server
             wsrv.routes_ = this->routes_;
+            wsrv.ws_routes_ = this->ws_routes_;
             wsrv.default_handler_ = this->default_handler_;
             wsrv.push_provider_ = this->push_provider_;
             auto task = wsrv.serve();

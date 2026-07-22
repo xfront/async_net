@@ -38,6 +38,10 @@ target_link_libraries(http_server PRIVATE async_net)
 add_executable(http_client http_client.cpp)
 target_link_libraries(http_client PRIVATE async_net)
 
+# WebSocket echo server
+add_executable(websocket_echo websocket_echo.cpp)
+target_link_libraries(websocket_echo PRIVATE async_net)
+
 # IM server + client simulator (long-polling push & offline messages)
 add_executable(im_server im_server.cpp)
 target_link_libraries(im_server PRIVATE async_net)

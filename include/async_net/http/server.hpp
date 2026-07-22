@@ -2,6 +2,7 @@
 
 #include <async_net/http/types.hpp>
 #include <async_net/http/handler.hpp>
+#include <async_net/http/websocket.hpp>
 #include <async_net/coroutine/task.hpp>
 #include <async_net/io/io_context.hpp>
 #include <async_net/net/tcp.hpp>
@@ -34,6 +35,9 @@ public:
 
     // Register a route handler
     void route(method m, const std::string& path, handler_fn handler);
+
+    // Register a WebSocket route (path-based, GET method implied)
+    void ws_route(const std::string& path, ws::ws_handler_fn handler);
 
     // Register a default handler (for unmatched routes, typically returns 404)
     void default_handler(handler_fn handler);
@@ -82,12 +86,18 @@ private:
         handler_fn handler;
     };
 
+    struct ws_route_entry {
+        std::string path;
+        ws::ws_handler_fn handler;
+    };
+
     io_context& ctx_;
     std::unique_ptr<tcp::acceptor> acceptor_;  // Created lazily in serve()
     uint16_t port_;
     std::string addr_;
     bool reuse_port_;
     std::vector<route_entry> routes_;
+    std::vector<ws_route_entry> ws_routes_;
     handler_fn default_handler_;
     push_provider push_provider_;
     bool running_ = true;
@@ -99,6 +109,13 @@ private:
 
     // Handle a single connection (HTTP/1.1 keep-alive loop)
     Task<void> handle_connection(tcp::socket sock);
+
+    // Handle a WebSocket connection (after 101 handshake)
+    Task<void> handle_websocket(tcp::socket& sock, const request& upgrade_req,
+                                ws::ws_handler_fn handler);
+
+    // Find WebSocket handler for a path
+    ws::ws_handler_fn* find_ws_handler(const std::string& path);
 
 #ifdef ASYNC_NET_HAS_SSL
     // Handle a single TLS connection

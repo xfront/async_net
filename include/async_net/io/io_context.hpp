@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <vector>
+#include <thread>
 
 namespace async_net {
 
@@ -31,6 +32,23 @@ public:
 
     // Run the event loop. Blocks until stop() is called.
     void run();
+
+    // Run the event loop with multiple threads, auto-selecting the best strategy:
+    //
+    //   supports_concurrent_poll()==true  (epoll / kqueue / IOCP):
+    //       All N threads share this io_context. The backend distributes events
+    //       across threads (epoll_wait/kevent/GetQueuedCompletionStatus are
+    //       thread-safe for the same fd/handle).
+    //
+    //   supports_concurrent_poll()==false (io_uring):
+    //       If worker_factory is provided: creates N per-thread io_context
+    //       instances, calling worker_factory(wctx) in each thread to set up
+    //       work (e.g. SO_REUSEPORT acceptor) and run the loop.
+    //       If no factory: falls back to single-threaded run().
+    //
+    // Blocks until all threads exit.
+    void run_mt(unsigned num_threads = 0,
+                std::function<void(io_context&)> worker_factory = nullptr);
 
     // Run the event loop until all work is done (work_count_ == 0 and no pending).
     // Use with work_guard to control the lifetime:

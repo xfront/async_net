@@ -32,6 +32,7 @@ public:
     void async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) override;
     void wake() override;
 
+    bool supports_concurrent_poll() const override { return false; }
     const char* name() const override { return "epoll"; }
 
 private:
@@ -55,20 +56,23 @@ private:
     std::unordered_map<socket_t, PendingOp> write_ops_;
     std::unordered_map<socket_t, uint32_t> fd_events_;  // Current epoll events per fd
     std::mutex mutex_;
-    bool in_poll_ = false;  // Re-entrancy guard
 
-    // Deferred wait operations (queued when called from within poll())
+    // Thread-local deferred waits: when a coroutine resumes synchronously inside
+    // poll() (while the mutex is held) and calls async_wait_readable/writable,
+    // we can't acquire the mutex (would deadlock). Instead, defer the operation.
     struct DeferredWait {
         socket_t fd;
         std::shared_ptr<OperationContext> ctx;
-        bool readable; // true=readable, false=writable
+        bool readable;
     };
-    std::vector<DeferredWait> deferred_waits_;
+    static thread_local std::vector<DeferredWait> tl_deferred_waits_;
+    static thread_local bool tl_in_poll_;
 
-    void process_deferred_waits(); // Must be called with mutex_ held
+    void process_deferred_waits();  // Process tl_deferred_waits_ with mutex held
 
     static constexpr int MAX_EVENTS = 1024;
-    struct epoll_event events_[MAX_EVENTS];
+    // NOTE: events array is intentionally NOT a class member.
+    // poll() uses a local stack array to allow concurrent calls from multiple threads.
 };
 
 } // namespace async_net

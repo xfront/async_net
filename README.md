@@ -6,8 +6,8 @@ A high-performance, header-friendly C++20 coroutine-based asynchronous network l
 
 - **C++20 Coroutines** — Write asynchronous code that reads like synchronous code using `co_await` / `co_return`
 - **Multiple I/O Backends** — Automatically selects the best backend for your platform:
-  - **epoll** — Linux (default)
-  - **io_uring** — Linux 5.1+ (pure async, opt-in)
+  - **epoll** — Linux (default on old kernel)
+  - **io_uring** — Linux 5.1+ (pure async, default on new kernel, fallback to epoll)
   - **kqueue** — macOS / FreeBSD / OpenBSD
   - **IOCP** — Windows
 - **HTTP Protocol Stack** — Full HTTP/1.1, HTTP/2, and HTTP/3 support:
@@ -37,9 +37,15 @@ A high-performance, header-friendly C++20 coroutine-based asynchronous network l
   - FlatBuffers zero-copy serialization (no parsing overhead)
   - Same 4 RPC types over HTTP/2 (reuses gRPC transport)
   - Content-type `application/grpc+flatbuffers` for protocol distinction
+- **Multi-Core Scalability** — Backend-level multi-threading with automatic strategy selection:
+  - `io_context::run_mt()` — multi-threaded event loop driver
+  - `server::serve_mt()` — multi-threaded HTTP server
+  - Concurrent-poll mode (kqueue/IOCP): N threads share one io_context
+  - SO_REUSEPORT mode (epoll/io_uring): per-thread io_context + server
 - **TechEmpower Benchmarks** — Complete Framework Benchmarks implementation:
   - All 7 test types: JSON, DB, Queries, Fortunes, Updates, Plaintext, Caching
   - In-memory database simulation for maximum performance
+  - Both single-threaded (`te_bench`) and multi-threaded (`te_bench_mt`) variants
 - **CMake Build System** — Easy to integrate into existing projects
 
 ## Project Structure
@@ -137,7 +143,8 @@ async_net/
 │   └── frpc/echo.fbs             # FRPC FlatBuffers schema
 ├── benchmarks/
 │   └── async_net/                # TechEmpower Framework Benchmarks
-│       ├── benchmark_server.cpp  # All 7 test implementations
+│       ├── benchmark_server.cpp  # All 7 test implementations (single-threaded)
+│       ├── benchmark_server_mt.cpp # All 7 test implementations (multi-threaded)
 │       ├── benchmark_config.json # Framework metadata
 │       ├── Dockerfile            # Container build config
 │       └── README.md             # Benchmark documentation
@@ -415,6 +422,7 @@ int main() {
 ├──────────────────────────────────────────────────────────────┤
 │              HTTP Protocol Stack                              │
 │   HTTP/1.1 (keep-alive) │ HTTP/2 (multiplex) │ HTTP/3 (QUIC)│
+│   serve() / serve_mt()  — single/multi-threaded HTTP server  │
 ├──────────────────────────────────────────────────────────────┤
 │         Executor Framework                                    │
 │   io_context │ thread_pool_executor │ strand │ co_spawn      │
@@ -423,15 +431,44 @@ int main() {
 │    Awaiters bridge coroutines ↔ I/O backend                  │
 ├──────────────────────────────────────────────────────────────┤
 │              io_context (event loop + executor)               │
-│         poll() → resume coroutines │ post() → wake()         │
+│   run() / run_mt()  │  poll() → resume  │  post() → wake()  │
 ├──────────────────────────────────────────────────────────────┤
-│           I/O Backend (abstract)                              │
-│   epoll │ io_uring │ kqueue │ IOCP                           │
+│     I/O Backend (abstract) — supports_concurrent_poll()       │
+│   ┌─────────────────────┬──────────────────────────────┐     │
+│   │ Concurrent-poll     │ SO_REUSEPORT (per-thread     │     │
+│   │ kqueue ✅ │ IOCP ✅ │ io_context)                  │     │
+│   │           │         │ epoll ✅ │ io_uring ✅        │     │
+│   └─────────────────────┴──────────────────────────────┘     │
 ├──────────────────────────────────────────────────────────────┤
 │               OS I/O APIs                                    │
 │   epoll_wait │ kevent │ GetQueuedCompletionStatus            │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+### Multi-Core Architecture
+
+`io_context::run_mt()` automatically selects the best multi-threading strategy based on the backend's `supports_concurrent_poll()` capability:
+
+```
+                    ┌──────────────────────┐
+                    │  io_context::run_mt() │
+                    └──────────┬───────────┘
+                               │
+                 supports_concurrent_poll()?
+                    ┌──────────┴───────────┐
+                    │ true                 │ false
+           ┌────────┴────────┐   ┌────────┴────────┐
+           │ Concurrent-poll │   │ SO_REUSEPORT    │
+           │ N threads share │   │ N × io_context  │
+           │ one io_context  │   │ + server        │
+           ├─────────────────┤   ├─────────────────┤
+           │ kqueue (macOS)  │   │ epoll (Linux)   │
+           │ IOCP (Windows)  │   │ io_uring (Linux)│
+           └─────────────────┘   └─────────────────┘
+```
+
+- **Concurrent-poll mode**: Multiple threads call `run()` on the same `io_context`. The backend's `poll()` is thread-safe and distributes I/O completions across threads. Used by kqueue and IOCP which natively support this pattern.
+- **SO_REUSEPORT mode**: Each thread creates its own `io_context` and server instance, all binding to the same port via `SO_REUSEPORT`. The OS kernel distributes incoming connections across workers. Used by epoll and io_uring.
 
 ### Key Design Decisions
 
@@ -441,6 +478,7 @@ int main() {
 4. **Resume Outside Lock** — The event loop collects completed operations under the lock, then resumes coroutines after releasing it, preventing deadlocks.
 5. **Handle Ownership** — When a coroutine is `co_await`ed, handle ownership is transferred via `std::exchange` to prevent double-destroy.
 6. **Executor Abstraction** — `io_context` inherits `executor`, enabling uniform work scheduling across io threads, thread pools, and strands.
+7. **Backend Capability Query** — `supports_concurrent_poll()` lets the runtime auto-select the optimal multi-threading strategy per platform, without user code changes.
 
 ## API Reference
 
@@ -451,6 +489,7 @@ The event loop that drives all async operations. Also acts as an `executor`.
 ```cpp
 io_context ctx;
 ctx.run();               // Run until stopped
+ctx.run_mt(N);           // Run with N threads (auto-selects strategy)
 ctx.run_until_complete(); // Run until all work_guard released
 ctx.run_one();           // Run one operation
 ctx.poll();              // Poll without blocking
@@ -587,7 +626,8 @@ srv.set_push_provider([](const http::request& req) {
     };
 });
 
-co_await srv.serve();
+co_await srv.serve();       // single-threaded
+co_await srv.serve_mt(N);   // multi-threaded (N threads/workers)
 // co_await srv.serve_h2(ssl_ctx);  // HTTP/2 with TLS
 ```
 
@@ -668,10 +708,12 @@ Run the TechEmpower Framework Benchmarks:
 ```bash
 # Build
 cd build
-cmake --build . --target te_bench
+cmake --build . --target te_bench        # single-threaded
+cmake --build . --target te_bench_mt     # multi-threaded
 
 # Run server (all 7 endpoints)
-./benchmarks/async_net/te_bench 8080
+./benchmarks/async_net/te_bench 8080             # single-threaded
+./benchmarks/async_net/te_bench_mt 8080 4        # multi-threaded, 4 workers
 
 # Endpoints:
 # GET /json            - JSON serialization
@@ -682,6 +724,15 @@ cmake --build . --target te_bench
 # GET /updates?q=N     - DB updates
 # GET /cached-queries  - Cached queries
 ```
+
+**Multi-threading strategy** (auto-selected per platform):
+
+| Backend  | `supports_concurrent_poll()` | Strategy | Description |
+|----------|------------------------------|----------|-------------|
+| kqueue   | ✅ true                      | Concurrent-poll | N threads share one io_context |
+| IOCP     | ✅ true                      | Concurrent-poll | N threads share one io_context |
+| epoll    | ❌ false                     | SO_REUSEPORT | N × (io_context + server) |
+| io_uring | ❌ false                     | SO_REUSEPORT | N × (io_context + server) |
 
 ## Platform Support
 

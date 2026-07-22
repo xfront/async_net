@@ -31,6 +31,9 @@ public:
     void async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) override;
     void wake() override;
 
+    // IOCP is designed for multi-threaded use: multiple threads calling
+    // GetQueuedCompletionStatus on the same IOCP handle each get distinct completions.
+    bool supports_concurrent_poll() const override { return true; }
     const char* name() const override { return "iocp"; }
 
 private:

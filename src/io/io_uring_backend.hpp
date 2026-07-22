@@ -37,6 +37,9 @@ public:
     void async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) override;
     void wake() override;
 
+    // io_uring ring is NOT safe for concurrent access from multiple threads.
+    // Use SO_REUSEPORT model (per-thread io_context) for multi-threading.
+    bool supports_concurrent_poll() const override { return false; }
     const char* name() const override { return "io_uring"; }
 
 private:

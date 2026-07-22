@@ -137,7 +137,10 @@ void KqueueBackend::poll(int timeout_ms) {
         ts_ptr = &ts;
     }
 
-    int n = kevent(kqueue_fd_, nullptr, 0, events_, MAX_EVENTS, ts_ptr);
+    // Local events array — each thread calling poll() gets its own copy on the stack.
+    // This makes concurrent poll() calls from multiple threads safe (kqueue is thread-safe).
+    struct kevent events[MAX_EVENTS];
+    int n = kevent(kqueue_fd_, nullptr, 0, events, MAX_EVENTS, ts_ptr);
 
     // Collect completed contexts to resume AFTER processing all events
     std::vector<OperationContext*> to_resume;
@@ -147,12 +150,12 @@ void KqueueBackend::poll(int timeout_ms) {
 
         for (int i = 0; i < n; ++i) {
             // Skip wakeup events (EVFILT_USER)
-            if (events_[i].filter == EVFILT_USER) {
+            if (events[i].filter == EVFILT_USER) {
                 continue;
             }
 
-            socket_t fd = events_[i].ident;
-            short filter = events_[i].filter;
+            socket_t fd = events[i].ident;
+            short filter = events[i].filter;
 
             if (filter == EVFILT_READ) {
                 auto it = read_ops_.find(fd);

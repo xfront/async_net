@@ -1,5 +1,6 @@
 #include <async_net/io/io_context.hpp>
 #include <stdexcept>
+#include <thread>
 
 #ifdef ASYNC_NET_WINDOWS
 #include <winsock2.h>
@@ -64,6 +65,50 @@ void io_context::run() {
     }
 
     current_context_ = prev;
+}
+
+void io_context::run_mt(unsigned num_threads,
+                         std::function<void(io_context&)> worker_factory) {
+    if (num_threads == 0) {
+        num_threads = std::thread::hardware_concurrency();
+        if (num_threads == 0) num_threads = 4;
+    }
+
+    if (num_threads <= 1) {
+        if (worker_factory) {
+            io_context w;
+            worker_factory(w);
+        } else {
+            run();
+        }
+        return;
+    }
+
+    if (backend_->supports_concurrent_poll()) {
+        // epoll / kqueue / IOCP: N threads share this io_context.
+        // Backend distributes events across threads via poll() (thread-safe).
+        std::vector<std::thread> threads;
+        threads.reserve(num_threads);
+        for (unsigned i = 0; i < num_threads; ++i) {
+            threads.emplace_back([this]() { run(); });
+        }
+        for (auto& t : threads) t.join();
+    } else if (worker_factory) {
+        // io_uring (or other non-concurrent backends):
+        // Create per-thread io_context, factory sets up + runs each.
+        std::vector<std::thread> threads;
+        threads.reserve(num_threads);
+        for (unsigned i = 0; i < num_threads; ++i) {
+            threads.emplace_back([wf = worker_factory]() {
+                io_context w;
+                wf(w);
+            });
+        }
+        for (auto& t : threads) t.join();
+    } else {
+        // Fallback: single-threaded
+        run();
+    }
 }
 
 void io_context::run_until_complete() {

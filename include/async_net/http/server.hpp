@@ -93,7 +93,9 @@ private:
     bool running_ = true;
 
     // Active connection tasks (prevent destruction)
+    // Protected by active_tasks_mutex_ for thread safety in multi-threaded mode
     std::unordered_set<Task<void>*> active_tasks_;
+    std::mutex active_tasks_mutex_;
 
     // Handle a single connection (HTTP/1.1 keep-alive loop)
     Task<void> handle_connection(tcp::socket sock);

@@ -66,6 +66,12 @@ public:
     // Default: no-op. Backends should override to provide efficient wakeup.
     virtual void wake() {}
 
+    // Returns true if poll() is safe to call concurrently from multiple threads.
+    // When true, io_context::run_mt() drives the event loop with a shared thread pool:
+    //   all N threads call run() on the same io_context.
+    // When false (e.g. io_uring), each thread needs its own io_context instance.
+    virtual bool supports_concurrent_poll() const { return false; }
+
     // Get the backend name
     virtual const char* name() const = 0;
 };

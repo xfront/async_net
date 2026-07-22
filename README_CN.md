@@ -6,8 +6,8 @@
 
 - **C++20 协程** — 使用 `co_await` / `co_return` 编写如同步代码风格的异步代码
 - **多种 I/O 后端** — 自动选择平台最佳后端：
-  - **epoll** — Linux（默认）
-  - **io_uring** — Linux 5.1+（纯异步，可选）
+  - **epoll** — Linux（旧内核默认）
+  - **io_uring** — Linux 5.1+（纯异步，新内核默认，fallback到epoll）
   - **kqueue** — macOS / FreeBSD / OpenBSD
   - **IOCP** — Windows
 - **HTTP 协议栈** — 完整的 HTTP/1.1、HTTP/2 和 HTTP/3 支持：
@@ -37,9 +37,15 @@
   - FlatBuffers 零拷贝序列化（无解析开销）
   - 复用 HTTP/2 传输层，支持相同 4 种 RPC 类型
   - 使用 `application/grpc+flatbuffers` content-type 区分协议
+- **多核可扩展** — 后端层多线程支持，自动选择最优策略：
+  - `io_context::run_mt()` — 多线程事件循环驱动
+  - `server::serve_mt()` — 多线程 HTTP 服务器
+  - 并发 poll 模式（kqueue/IOCP）：N 线程共享一个 io_context
+  - SO_REUSEPORT 模式（epoll/io_uring）：每线程独立 io_context + server
 - **TechEmpower 基准测试** — 完整的 Framework Benchmarks 实现：
   - 全部 7 种测试：JSON、DB、Queries、Fortunes、Updates、Plaintext、Caching
   - 内存数据库模拟，最大化性能
+  - 单线程（`te_bench`）和多线程（`te_bench_mt`）两种变体
 - **CMake 构建系统** — 易于集成到现有项目
 
 ## 项目结构
@@ -137,7 +143,8 @@ async_net/
 │   └── frpc/echo.fbs             # FRPC FlatBuffers Schema
 ├── benchmarks/
 │   └── async_net/                # TechEmpower Framework Benchmarks
-│       ├── benchmark_server.cpp  # 全部 7 种测试实现
+│       ├── benchmark_server.cpp  # 全部 7 种测试实现（单线程）
+│       ├── benchmark_server_mt.cpp # 全部 7 种测试实现（多线程）
 │       ├── benchmark_config.json # 框架元数据配置
 │       ├── Dockerfile            # 容器构建配置
 │       └── README.md             # 基准测试文档
@@ -415,6 +422,7 @@ int main() {
 ├──────────────────────────────────────────────────────────────┤
 │              HTTP 协议栈                                      │
 │   HTTP/1.1 (keep-alive) │ HTTP/2 (多路复用) │ HTTP/3 (QUIC) │
+│   serve() / serve_mt()  — 单线程/多线程 HTTP 服务器          │
 ├──────────────────────────────────────────────────────────────┤
 │         Executor 框架                                         │
 │   io_context │ thread_pool_executor │ strand │ co_spawn      │
@@ -423,15 +431,44 @@ int main() {
 │    Awaiter 桥接协程 ↔ I/O 后端                               │
 ├──────────────────────────────────────────────────────────────┤
 │              io_context（事件循环 + executor）                │
-│         poll() → 恢复协程 │ post() → wake()                 │
+│   run() / run_mt()  │  poll() → 恢复协程  │  post() → wake()│
 ├──────────────────────────────────────────────────────────────┤
-│           I/O 后端（抽象接口）                                │
-│   epoll │ io_uring │ kqueue │ IOCP                           │
+│     I/O 后端（抽象接口）— supports_concurrent_poll()          │
+│   ┌─────────────────────┬──────────────────────────────┐     │
+│   │ 并发 poll           │ SO_REUSEPORT（每线程独立      │     │
+│   │ kqueue ✅ │ IOCP ✅ │ io_context）                 │     │
+│   │           │         │ epoll ✅ │ io_uring ✅        │     │
+│   └─────────────────────┴──────────────────────────────┘     │
 ├──────────────────────────────────────────────────────────────┤
 │               操作系统 I/O API                                │
 │   epoll_wait │ kevent │ GetQueuedCompletionStatus            │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+### 多核架构
+
+`io_context::run_mt()` 根据后端的 `supports_concurrent_poll()` 能力自动选择最优多线程策略：
+
+```
+                    ┌──────────────────────┐
+                    │  io_context::run_mt() │
+                    └──────────┬───────────┘
+                               │
+                 supports_concurrent_poll()?
+                    ┌──────────┴───────────┐
+                    │ true                 │ false
+           ┌────────┴────────┐   ┌────────┴────────┐
+           │ 并发 poll       │   │ SO_REUSEPORT    │
+           │ N 线程共享      │   │ N × io_context  │
+           │ 一个 io_context │   │ + server        │
+           ├─────────────────┤   ├─────────────────┤
+           │ kqueue (macOS)  │   │ epoll (Linux)   │
+           │ IOCP (Windows)  │   │ io_uring (Linux)│
+           └─────────────────┘   └─────────────────┘
+```
+
+- **并发 poll 模式**：多个线程在同一个 `io_context` 上调用 `run()`。后端的 `poll()` 是线程安全的，将 I/O 完成事件分发到各线程。kqueue 和 IOCP 原生支持此模式。
+- **SO_REUSEPORT 模式**：每个线程创建独立的 `io_context` 和服务器实例，均通过 `SO_REUSEPORT` 绑定同一端口。操作系统内核将传入连接分发到各 worker。epoll 和 io_uring 使用此模式。
 
 ### 关键设计决策
 
@@ -441,6 +478,7 @@ int main() {
 4. **锁外恢复** — 事件循环在持有锁时收集已完成的操作，释放锁后再恢复协程，防止死锁。
 5. **句柄所有权** — 当协程被 `co_await` 时，句柄所有权通过 `std::exchange` 转移，防止重复销毁。
 6. **Executor 抽象** — `io_context` 继承 `executor`，支持在 IO 线程、线程池和 strand 上统一调度任务。
+7. **后端能力查询** — `supports_concurrent_poll()` 让运行时自动选择每个平台的最优多线程策略，用户代码无需修改。
 
 ## API 参考
 
@@ -451,6 +489,7 @@ int main() {
 ```cpp
 io_context ctx;
 ctx.run();               // 运行直到停止
+ctx.run_mt(N);           // N 线程运行（自动选择策略）
 ctx.run_until_complete(); // 运行直到所有 work_guard 释放
 ctx.run_one();           // 运行一个操作
 ctx.poll();              // 非阻塞轮询
@@ -587,7 +626,8 @@ srv.set_push_provider([](const http::request& req) {
     };
 });
 
-co_await srv.serve();
+co_await srv.serve();       // 单线程
+co_await srv.serve_mt(N);   // 多线程（N 个线程/worker）
 // co_await srv.serve_h2(ssl_ctx);  // HTTP/2 + TLS
 ```
 
@@ -668,10 +708,12 @@ co_await srv.serve();
 ```bash
 # 构建
 cd build
-cmake --build . --target te_bench
+cmake --build . --target te_bench        # 单线程
+cmake --build . --target te_bench_mt     # 多线程
 
 # 运行服务器（全部 7 个端点）
-./benchmarks/async_net/te_bench 8080
+./benchmarks/async_net/te_bench 8080             # 单线程
+./benchmarks/async_net/te_bench_mt 8080 4        # 多线程，4 个 worker
 
 # 端点列表：
 # GET /json            - JSON 序列化
@@ -682,6 +724,15 @@ cmake --build . --target te_bench
 # GET /updates?q=N     - 数据库更新
 # GET /cached-queries  - 缓存查询
 ```
+
+**多线程策略**（按平台自动选择）：
+
+| 后端     | `supports_concurrent_poll()` | 策略 | 说明 |
+|----------|------------------------------|------|------|
+| kqueue   | ✅ true                      | 并发 poll | N 线程共享一个 io_context |
+| IOCP     | ✅ true                      | 并发 poll | N 线程共享一个 io_context |
+| epoll    | ❌ false                     | SO_REUSEPORT | N × (io_context + server) |
+| io_uring | ❌ false                     | SO_REUSEPORT | N × (io_context + server) |
 
 ## 平台支持
 

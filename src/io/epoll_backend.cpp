@@ -12,6 +12,11 @@
 
 namespace async_net {
 
+// Thread-local deferred waits for handling coroutines that resume synchronously
+// inside poll() while the mutex is held.
+thread_local std::vector<EpollBackend::DeferredWait> EpollBackend::tl_deferred_waits_;
+thread_local bool EpollBackend::tl_in_poll_ = false;
+
 EpollBackend::EpollBackend() {
     epoll_fd_ = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd_ < 0) {
@@ -153,31 +158,32 @@ void EpollBackend::async_sendto(socket_t fd, const void* buf, size_t len, const 
 }
 
 void EpollBackend::async_wait_readable(socket_t fd, std::shared_ptr<OperationContext> ctx) {
-    std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
-    if (!lock.owns_lock()) {
-        // Called from within poll() — defer
-        deferred_waits_.push_back({fd, std::move(ctx), true});
+    if (tl_in_poll_) {
+        // Called from a coroutine that resumed synchronously inside poll()
+        // (while the mutex is held). Defer to avoid deadlock.
+        tl_deferred_waits_.push_back({fd, std::move(ctx), true});
         return;
     }
+    std::lock_guard<std::mutex> lock(mutex_);
     ctx->set_type(OpType::WaitReadable);
     read_ops_[fd] = PendingOp{OpType::WaitReadable, nullptr, 0, nullptr, std::move(ctx), {}, 0};
     update_events(fd, EPOLLIN);
 }
 
 void EpollBackend::async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) {
-    std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
-    if (!lock.owns_lock()) {
-        deferred_waits_.push_back({fd, std::move(ctx), false});
+    if (tl_in_poll_) {
+        tl_deferred_waits_.push_back({fd, std::move(ctx), false});
         return;
     }
+    std::lock_guard<std::mutex> lock(mutex_);
     ctx->set_type(OpType::WaitWritable);
     write_ops_[fd] = PendingOp{OpType::WaitWritable, nullptr, 0, nullptr, std::move(ctx), {}, 0};
     update_events(fd, EPOLLOUT);
 }
 
 void EpollBackend::process_deferred_waits() {
-    // Must be called with mutex_ held
-    for (auto& dw : deferred_waits_) {
+    // Must be called with mutex_ held. Processes thread-local deferred waits.
+    for (auto& dw : tl_deferred_waits_) {
         if (dw.readable) {
             dw.ctx->set_type(OpType::WaitReadable);
             read_ops_[dw.fd] = PendingOp{OpType::WaitReadable, nullptr, 0, nullptr, std::move(dw.ctx), {}, 0};
@@ -188,11 +194,20 @@ void EpollBackend::process_deferred_waits() {
             update_events(dw.fd, EPOLLOUT);
         }
     }
-    deferred_waits_.clear();
+    tl_deferred_waits_.clear();
 }
 
 void EpollBackend::poll(int timeout_ms) {
-    int n = epoll_wait(epoll_fd_, events_, MAX_EVENTS, timeout_ms);
+    // Local events array — each thread calling poll() gets its own copy on the stack.
+    // This makes concurrent poll() calls from multiple threads safe.
+    struct epoll_event events[MAX_EVENTS];
+
+    // Mark that this thread is inside poll(). If a coroutine resumes synchronously
+    // (within this call) and calls async_wait_readable/writable, it will defer
+    // instead of trying to acquire the mutex (which would deadlock).
+    tl_in_poll_ = true;
+
+    int n = epoll_wait(epoll_fd_, events, MAX_EVENTS, timeout_ms);
 
     // Collect completed contexts to resume AFTER processing all events
     // Use shared_ptr to keep OperationContext alive until after resume
@@ -208,8 +223,8 @@ void EpollBackend::poll(int timeout_ms) {
         process_deferred_waits();
 
         for (int i = 0; i < n; ++i) {
-            socket_t fd = events_[i].data.fd;
-            uint32_t revents = events_[i].events;
+            socket_t fd = events[i].data.fd;
+            uint32_t revents = events[i].events;
 
             // Skip wake eventfd — just consume the data
             if (fd == wake_fd_) {
@@ -335,6 +350,15 @@ void EpollBackend::poll(int timeout_ms) {
     for (auto& ctx : to_resume) {
         ctx->resume();
     }
+
+    // Process any deferred waits from coroutines that resumed synchronously
+    // (e.g., SSL WANT_READ/WANT_WRITE). Must acquire the mutex here.
+    if (!tl_deferred_waits_.empty()) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        process_deferred_waits();
+    }
+
+    tl_in_poll_ = false;
 }
 
 void EpollBackend::wake() {

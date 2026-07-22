@@ -32,6 +32,9 @@ public:
     void async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) override;
     void wake() override;
 
+    // kqueue supports concurrent kevent() calls from multiple threads.
+    // EV_ONESHOT ensures each event is delivered to at most one thread.
+    bool supports_concurrent_poll() const override { return true; }
     const char* name() const override { return "kqueue"; }
 
 private:
@@ -59,7 +62,8 @@ private:
 
     static constexpr int MAX_EVENTS = 1024;
     static constexpr uintptr_t WAKEUP_IDENT = static_cast<uintptr_t>(-1);
-    struct kevent events_[MAX_EVENTS];
+    // NOTE: events array is intentionally NOT a class member.
+    // poll() uses a local stack array to allow concurrent calls from multiple threads.
 };
 
 } // namespace async_net

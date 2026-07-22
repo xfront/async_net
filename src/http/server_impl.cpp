@@ -50,8 +50,11 @@ void server::stop() {
 }
 
 void server::cleanup_task(Task<void>* task) {
+    std::lock_guard<std::mutex> lock(active_tasks_mutex_);
     active_tasks_.erase(task);
-    delete task;
+    // NOTE: do NOT delete here. The caller (serve/serve_tls/serve_h2) checks
+    // task->done() and deletes. This avoids double-free when a coroutine
+    // completes synchronously inside poll()'s mutex (before serve() can check).
 }
 
 // ---------------------------------------------------------------------------
@@ -78,10 +81,14 @@ Task<void> server::serve() {
         }
 
         auto* task = new Task<void>(handle_connection(std::move(sock)));
-        active_tasks_.insert(task);
+        {
+            std::lock_guard<std::mutex> lock(active_tasks_mutex_);
+            active_tasks_.insert(task);
+        }
         task->resume();
         if (task->done()) {
             cleanup_task(task);
+            delete task;
         }
     }
 }
@@ -107,10 +114,14 @@ Task<void> server::serve_tls(ssl::context& ssl_ctx) {
         }
 
         auto* task = new Task<void>(handle_tls_connection(std::move(sock), ssl_ctx));
-        active_tasks_.insert(task);
+        {
+            std::lock_guard<std::mutex> lock(active_tasks_mutex_);
+            active_tasks_.insert(task);
+        }
         task->resume();
         if (task->done()) {
             cleanup_task(task);
+            delete task;
         }
     }
 }
@@ -146,10 +157,14 @@ Task<void> server::serve_h2(ssl::context& ssl_ctx) {
         }
 
         auto* task = new Task<void>(handle_h2_connection(std::move(sock), ssl_ctx));
-        active_tasks_.insert(task);
+        {
+            std::lock_guard<std::mutex> lock(active_tasks_mutex_);
+            active_tasks_.insert(task);
+        }
         task->resume();
         if (task->done()) {
             cleanup_task(task);
+            delete task;
         }
     }
 }
@@ -602,66 +617,32 @@ void server::serve_mt(unsigned int num_threads) {
         return;
     }
 
-#ifdef _WIN32
-    // Windows: IOCP distributes completions across threads sharing one io_context.
-    // All threads call ctx_.run() on the same io_context.
-    std::cout << "[serve_mt] Windows IOCP mode: " << num_threads << " threads sharing backend" << std::endl;
-
-    auto task = serve();
-    task.resume();
-
-    std::atomic<int> ready{0};
-    std::vector<std::thread> threads;
-    threads.reserve(num_threads);
-
-    for (unsigned int i = 0; i < num_threads; ++i) {
-        threads.emplace_back([this, &ready]() {
-            ready.fetch_add(1, std::memory_order_release);
-            ctx_.run();
-        });
-    }
-
-    while (ready.load(std::memory_order_acquire) < static_cast<int>(num_threads)) {
-        std::this_thread::yield();
-    }
-
-    for (auto& t : threads) {
-        t.join();
-    }
-#else
-    // Linux/macOS: SO_REUSEPORT — each worker has its own io_context + server
-    std::cout << "[serve_mt] SO_REUSEPORT mode: " << num_threads << " workers" << std::endl;
-
-    std::atomic<int> ready{0};
-    std::vector<std::thread> threads;
-    threads.reserve(num_threads);
-
-    for (unsigned int i = 0; i < num_threads; ++i) {
-        threads.emplace_back([this, &ready]() {
+    if (ctx_.backend().supports_concurrent_poll()) {
+        // epoll / kqueue / IOCP: single server, N threads share the io_context.
+        // Backend distributes events across threads (poll() is thread-safe).
+        std::cout << "[serve_mt] Concurrent-poll (" << ctx_.backend().name()
+                  << "): " << num_threads << " threads\n";
+        auto task = serve();
+        task.resume();
+        ctx_.run_mt(num_threads);
+    } else {
+        // io_uring (or other non-concurrent backends):
+        // SO_REUSEPORT — each worker has its own io_context + server.
+        // Delegates to run_mt() with a worker_factory callback.
+        std::cout << "[serve_mt] SO_REUSEPORT (" << ctx_.backend().name()
+                  << "): " << num_threads << " workers\n";
+        ctx_.run_mt(num_threads, [this](io_context& wctx) {
             // Each worker creates its own io_context + server
-            io_context worker_ctx;
-            server worker_srv(worker_ctx, port_, "0.0.0.0", /*reuse_port=*/true);
-
+            server wsrv(wctx, port_, addr_.c_str(), /*reuse_port=*/true);
             // Copy routes and handlers from this server
-            worker_srv.routes_ = this->routes_;
-            worker_srv.default_handler_ = this->default_handler_;
-            worker_srv.push_provider_ = this->push_provider_;
-
-            auto task = worker_srv.serve();
+            wsrv.routes_ = this->routes_;
+            wsrv.default_handler_ = this->default_handler_;
+            wsrv.push_provider_ = this->push_provider_;
+            auto task = wsrv.serve();
             task.resume();
-            ready.fetch_add(1, std::memory_order_release);
-            worker_ctx.run();
+            wctx.run();
         });
     }
-
-    while (ready.load(std::memory_order_acquire) < static_cast<int>(num_threads)) {
-        std::this_thread::yield();
-    }
-
-    for (auto& t : threads) {
-        t.join();
-    }
-#endif
 }
 
 } // namespace async_net::http

@@ -29,6 +29,17 @@ A high-performance, header-friendly C++20 coroutine-based asynchronous network l
 - **TCP & UDP Support** — Full async operations for both TCP and UDP sockets
 - **Multicast & Broadcast** — Built-in socket options for UDP multicast/broadcast
 - **Thread-Safe** — All I/O backend operations are protected by mutexes; cross-thread `post()` with wake-up
+- **gRPC Framework** — Full gRPC implementation over HTTP/2:
+  - Protocol Buffers serialization with CMake code generation
+  - 4 RPC types: Unary, Server Streaming, Client Streaming, Bidirectional Streaming
+  - Interceptor support (similar to gRPC C++ middleware)
+- **FRPC Framework** — FlatBuffers-based RPC as a lightweight gRPC alternative:
+  - FlatBuffers zero-copy serialization (no parsing overhead)
+  - Same 4 RPC types over HTTP/2 (reuses gRPC transport)
+  - Content-type `application/grpc+flatbuffers` for protocol distinction
+- **TechEmpower Benchmarks** — Complete Framework Benchmarks implementation:
+  - All 7 test types: JSON, DB, Queries, Fortunes, Updates, Plaintext, Caching
+  - In-memory database simulation for maximum performance
 - **CMake Build System** — Easy to integrate into existing projects
 
 ## Project Structure
@@ -52,6 +63,17 @@ async_net/
 │   │   ├── strand.hpp            # Serialized execution guarantee
 │   │   ├── schedule.hpp          # sleep_for, scheduled_task
 │   │   └── coroutine.hpp         # run_on, co_spawn, schedule_at_fixed_rate
+│   ├── frpc/
+│   │   ├── types.hpp             # FRPC types (FlatBuffers RPC)
+│   │   ├── server.hpp            # FRPC server
+│   │   └── channel.hpp           # FRPC client channel
+│   ├── grpc/
+│   │   ├── types.hpp             # gRPC types (status, metadata, stream)
+│   │   ├── server.hpp            # gRPC server
+│   │   ├── channel.hpp           # gRPC client channel
+│   │   ├── interceptor.hpp       # gRPC interceptor
+│   │   ├── stream.hpp            # gRPC stream utilities
+│   │   └── stream_deframer.hpp   # gRPC message deframer
 │   ├── http/
 │   │   ├── types.hpp             # HTTP types (request, response, method, headers)
 │   │   ├── server.hpp            # HTTP server with routing
@@ -77,12 +99,20 @@ async_net/
 │   │   ├── kqueue_backend.hpp/.cpp   # kqueue backend (macOS/BSD)
 │   │   ├── iocp_backend.hpp/.cpp     # IOCP backend (Windows)
 │   │   └── ssl.cpp                 # SSL/TLS implementation
-│   └── http/
-│       ├── h1_codec.hpp          # HTTP/1.1 codec
-│       ├── h2_frame.hpp          # HTTP/2 frame parser/builder
-│       ├── h3_frame.hpp          # HTTP/3 frame parser/builder
-│       ├── hpack.hpp             # HPACK header compression
-│       └── qpack.hpp             # QPACK header compression
+│   ├── http/
+│   │   ├── h1_codec.hpp          # HTTP/1.1 codec
+│   │   ├── h2_frame.hpp          # HTTP/2 frame parser/builder
+│   │   ├── h3_frame.hpp          # HTTP/3 frame parser/builder
+│   │   ├── hpack.hpp             # HPACK header compression
+│   │   └── qpack.hpp             # QPACK header compression
+│   ├── grpc/
+│   │   ├── grpc_server.cpp       # gRPC server implementation
+│   │   ├── grpc_channel.cpp      # gRPC client implementation
+│   │   ├── grpc_stream.cpp       # gRPC stream implementation
+│   │   └── grpc_wire.cpp         # gRPC wire format (frame encode/decode)
+│   └── frpc/
+│       ├── frpc_server.cpp       # FRPC server implementation
+│       └── frpc_channel.cpp      # FRPC client implementation
 ├── examples/
 │   ├── echo_server.cpp           # Async echo server
 │   ├── echo_client.cpp           # Async echo client
@@ -98,7 +128,19 @@ async_net/
 │   ├── http_multi_server.cpp     # Multi-protocol server (H1/H2/H3)
 │   ├── http_multi_client.cpp     # URL-based multi-protocol client
 │   ├── h2_server.cpp             # HTTP/2 server with Server Push
-│   └── h3_server.cpp             # HTTP/3 (QUIC) server
+│   ├── h3_server.cpp             # HTTP/3 (QUIC) server
+│   ├── grpc_echo_server.cpp      # gRPC server example
+│   ├── grpc_echo_client.cpp      # gRPC client example
+│   ├── grpc/echo.proto           # gRPC Protocol Buffers schema
+│   ├── frpc_echo_server.cpp      # FRPC server example (FlatBuffers)
+│   ├── frpc_echo_client.cpp      # FRPC client example (FlatBuffers)
+│   └── frpc/echo.fbs             # FRPC FlatBuffers schema
+├── benchmarks/
+│   └── async_net/                # TechEmpower Framework Benchmarks
+│       ├── benchmark_server.cpp  # All 7 test implementations
+│       ├── benchmark_config.json # Framework metadata
+│       ├── Dockerfile            # Container build config
+│       └── README.md             # Benchmark documentation
 └── tests/
     ├── test_task.cpp             # Task<T> unit tests
     ├── test_spawn.cpp            # spawn / JoinHandle tests
@@ -368,6 +410,9 @@ int main() {
 │                  User Code (coroutines)                       │
 │   co_await socket.async_read()  │  co_await client.get(url) │
 ├──────────────────────────────────────────────────────────────┤
+│              RPC Frameworks                                   │
+│   gRPC (Protobuf) │ FRPC (FlatBuffers) │ Interceptors        │
+├──────────────────────────────────────────────────────────────┤
 │              HTTP Protocol Stack                              │
 │   HTTP/1.1 (keep-alive) │ HTTP/2 (multiplex) │ HTTP/3 (QUIC)│
 ├──────────────────────────────────────────────────────────────┤
@@ -557,6 +602,85 @@ printf("Status: %d, Body: %s\n", resp.status_code, resp.body.c_str());
 
 // POST request
 auto resp2 = co_await cli.post("https://example.com/api/submit", "{\"key\":\"value\"}", "application/json");
+```
+
+### gRPC Server
+
+Full gRPC server with Protocol Buffers and all 4 RPC types.
+
+```cpp
+#include <async_net/grpc/server.hpp>
+
+grpc::server srv(ctx, 50051);
+
+// Unary RPC
+srv.register_unary_handler<Request, Response>(
+    "/package.Service/Method",
+    [](const Request& req, grpc::call_context& ctx) -> Task<grpc::status> {
+        // Process request, build response
+        co_return grpc::status::ok;
+    });
+
+// Server streaming RPC
+srv.register_server_stream_handler<Request, Response>(
+    "/package.Service/StreamMethod",
+    [](const Request& req, grpc::writer<Response>& writer, grpc::call_context& ctx) -> Task<grpc::status> {
+        co_await writer.write(response1);
+        co_await writer.write(response2);
+        co_await writer.finish();
+        co_return grpc::status::ok;
+    });
+
+// Add interceptor for logging/auth
+srv.add_interceptor([](const grpc::call_context& ctx) -> Task<grpc::status> {
+    // Pre-call logic
+    co_return grpc::status::ok;
+});
+
+co_await srv.serve();
+```
+
+### FRPC Server (FlatBuffers RPC)
+
+Lightweight RPC using FlatBuffers for zero-copy serialization.
+
+```cpp
+#include <async_net/frpc/server.hpp>
+
+frpc::server srv(ctx, 50052);
+
+// Register handler with FlatBuffers types
+srv.register_unary_handler<echo::EchoRequest, echo::EchoResponse>(
+    "/echo.EchoService/Echo",
+    [](const echo::EchoRequest& req, grpc::call_context& ctx) -> Task<grpc::status> {
+        // req.message() - access FlatBuffers field
+        // Build response with FlatBufferBuilder
+        co_return grpc::status::ok;
+    });
+
+co_await srv.serve();
+```
+
+### TechEmpower Benchmarks
+
+Run the TechEmpower Framework Benchmarks:
+
+```bash
+# Build
+cd build
+cmake --build . --target te_bench
+
+# Run server (all 7 endpoints)
+./benchmarks/async_net/te_bench 8080
+
+# Endpoints:
+# GET /json            - JSON serialization
+# GET /plaintext       - Plaintext response
+# GET /db              - Single DB query
+# GET /queries?q=N     - Multiple DB queries
+# GET /fortunes        - Fortunes (HTML rendering)
+# GET /updates?q=N     - DB updates
+# GET /cached-queries  - Cached queries
 ```
 
 ## Platform Support

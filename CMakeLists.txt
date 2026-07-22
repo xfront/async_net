@@ -3,6 +3,7 @@ project(async_net LANGUAGES CXX)
 
 # Include custom CMake modules
 include(cmake/AsyncNetProtobuf.cmake)
+include(cmake/AsyncNetFlatBuffers.cmake)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,6 +22,9 @@ option(ASYNC_NET_WITH_HTTP3 "Enable HTTP/3 support (QUIC)" ON)
 
 # gRPC support (HTTP/2 + protobuf + self-contained wire protocol)
 option(ASYNC_NET_WITH_GRPC "Enable gRPC support" ON)
+
+# FRPC support (HTTP/2 + FlatBuffers + self-contained wire protocol)
+option(ASYNC_NET_WITH_FRPC "Enable FRPC (FlatBuffers RPC) support" ON)
 
 # Compiler-specific coroutine flags
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
@@ -214,6 +218,17 @@ if(ASYNC_NET_WITH_GRPC AND ASYNC_NET_HAS_HTTP2)
     set(ASYNC_NET_HAS_GRPC TRUE)
 endif()
 
+# FRPC support (HTTP/2 + FlatBuffers wire protocol)
+# FRPC depends on gRPC for shared stream abstractions
+set(ASYNC_NET_HAS_FRPC FALSE)
+if(ASYNC_NET_WITH_FRPC AND ASYNC_NET_HAS_GRPC)
+    list(APPEND ASYNC_NET_SOURCES
+        src/frpc/frpc_server.cpp
+        src/frpc/frpc_channel.cpp
+    )
+    set(ASYNC_NET_HAS_FRPC TRUE)
+endif()
+
 add_library(async_net ${ASYNC_NET_SOURCES})
 target_include_directories(async_net PUBLIC include PRIVATE src)
 
@@ -235,6 +250,12 @@ if(ASYNC_NET_HAS_GRPC)
     else()
         message(STATUS "gRPC support: enabled (without protobuf - raw bytes only)")
     endif()
+endif()
+
+# FRPC compile definitions and linkage (after library creation)
+if(ASYNC_NET_HAS_FRPC)
+    target_compile_definitions(async_net PUBLIC ASYNC_NET_HAS_FRPC=1)
+    message(STATUS "FRPC support: enabled (FlatBuffers RPC)")
 endif()
 
 # SSL backend linkage

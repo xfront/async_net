@@ -29,6 +29,17 @@
 - **TCP 和 UDP 支持** — 完整的 TCP 和 UDP 套接字异步操作
 - **多播与广播** — 内置 UDP 多播/广播套接字选项支持
 - **线程安全** — 所有 I/O 后端操作均使用互斥锁保护；跨线程 `post()` 自动唤醒
+- **gRPC 框架** — 基于 HTTP/2 的完整 gRPC 实现：
+  - Protocol Buffers 序列化，支持 CMake 代码生成
+  - 4 种 RPC 类型：Unary、Server Streaming、Client Streaming、Bidirectional Streaming
+  - 拦截器支持（类似 gRPC C++ 中间件）
+- **FRPC 框架** — 基于 FlatBuffers 的轻量级 RPC（gRPC 替代方案）：
+  - FlatBuffers 零拷贝序列化（无解析开销）
+  - 复用 HTTP/2 传输层，支持相同 4 种 RPC 类型
+  - 使用 `application/grpc+flatbuffers` content-type 区分协议
+- **TechEmpower 基准测试** — 完整的 Framework Benchmarks 实现：
+  - 全部 7 种测试：JSON、DB、Queries、Fortunes、Updates、Plaintext、Caching
+  - 内存数据库模拟，最大化性能
 - **CMake 构建系统** — 易于集成到现有项目
 
 ## 项目结构
@@ -52,6 +63,17 @@ async_net/
 │   │   ├── strand.hpp            # 串行执行保证
 │   │   ├── schedule.hpp          # sleep_for、scheduled_task
 │   │   └── coroutine.hpp         # run_on、co_spawn、schedule_at_fixed_rate
+│   ├── frpc/
+│   │   ├── types.hpp             # FRPC 类型（FlatBuffers RPC）
+│   │   ├── server.hpp            # FRPC 服务器
+│   │   └── channel.hpp           # FRPC 客户端通道
+│   ├── grpc/
+│   │   ├── types.hpp             # gRPC 类型（status、metadata、stream）
+│   │   ├── server.hpp            # gRPC 服务器
+│   │   ├── channel.hpp           # gRPC 客户端通道
+│   │   ├── interceptor.hpp       # gRPC 拦截器
+│   │   ├── stream.hpp            # gRPC 流工具
+│   │   └── stream_deframer.hpp   # gRPC 消息解帧器
 │   ├── http/
 │   │   ├── types.hpp             # HTTP 类型（request、response、method、headers）
 │   │   ├── server.hpp            # HTTP 服务器（路由分发）
@@ -77,12 +99,20 @@ async_net/
 │   │   ├── kqueue_backend.hpp/.cpp   # kqueue 后端 (macOS/BSD)
 │   │   ├── iocp_backend.hpp/.cpp     # IOCP 后端 (Windows)
 │   │   └── ssl.cpp                 # SSL/TLS 实现
-│   └── http/
-│       ├── h1_codec.hpp          # HTTP/1.1 编解码器
-│       ├── h2_frame.hpp          # HTTP/2 帧解析/构建
-│       ├── h3_frame.hpp          # HTTP/3 帧解析/构建
-│       ├── hpack.hpp             # HPACK 头部压缩
-│       └── qpack.hpp             # QPACK 头部压缩
+│   ├── http/
+│   │   ├── h1_codec.hpp          # HTTP/1.1 编解码器
+│   │   ├── h2_frame.hpp          # HTTP/2 帧解析/构建
+│   │   ├── h3_frame.hpp          # HTTP/3 帧解析/构建
+│   │   ├── hpack.hpp             # HPACK 头部压缩
+│   │   └── qpack.hpp             # QPACK 头部压缩
+│   ├── grpc/
+│   │   ├── grpc_server.cpp       # gRPC 服务器实现
+│   │   ├── grpc_channel.cpp      # gRPC 客户端实现
+│   │   ├── grpc_stream.cpp       # gRPC 流实现
+│   │   └── grpc_wire.cpp         # gRPC 线路格式（帧编解码）
+│   └── frpc/
+│       ├── frpc_server.cpp       # FRPC 服务器实现
+│       └── frpc_channel.cpp      # FRPC 客户端实现
 ├── examples/
 │   ├── echo_server.cpp           # 异步 Echo 服务器
 │   ├── echo_client.cpp           # 异步 Echo 客户端
@@ -98,7 +128,19 @@ async_net/
 │   ├── http_multi_server.cpp     # 多协议服务器 (H1/H2/H3)
 │   ├── http_multi_client.cpp     # 基于 URL 的多协议客户端
 │   ├── h2_server.cpp             # HTTP/2 服务器（Server Push）
-│   └── h3_server.cpp             # HTTP/3 (QUIC) 服务器
+│   ├── h3_server.cpp             # HTTP/3 (QUIC) 服务器
+│   ├── grpc_echo_server.cpp      # gRPC 服务器示例
+│   ├── grpc_echo_client.cpp      # gRPC 客户端示例
+│   ├── grpc/echo.proto           # gRPC Protocol Buffers Schema
+│   ├── frpc_echo_server.cpp      # FRPC 服务器示例（FlatBuffers）
+│   ├── frpc_echo_client.cpp      # FRPC 客户端示例（FlatBuffers）
+│   └── frpc/echo.fbs             # FRPC FlatBuffers Schema
+├── benchmarks/
+│   └── async_net/                # TechEmpower Framework Benchmarks
+│       ├── benchmark_server.cpp  # 全部 7 种测试实现
+│       ├── benchmark_config.json # 框架元数据配置
+│       ├── Dockerfile            # 容器构建配置
+│       └── README.md             # 基准测试文档
 └── tests/
     ├── test_task.cpp             # Task<T> 单元测试
     ├── test_spawn.cpp            # spawn / JoinHandle 测试
@@ -368,6 +410,9 @@ int main() {
 │                  用户代码（协程）                              │
 │   co_await socket.async_read()  │  co_await client.get(url) │
 ├──────────────────────────────────────────────────────────────┤
+│              RPC 框架                                         │
+│   gRPC (Protobuf) │ FRPC (FlatBuffers) │ 拦截器              │
+├──────────────────────────────────────────────────────────────┤
 │              HTTP 协议栈                                      │
 │   HTTP/1.1 (keep-alive) │ HTTP/2 (多路复用) │ HTTP/3 (QUIC) │
 ├──────────────────────────────────────────────────────────────┤
@@ -557,6 +602,85 @@ printf("Status: %d, Body: %s\n", resp.status_code, resp.body.c_str());
 
 // POST 请求
 auto resp2 = co_await cli.post("https://example.com/api/submit", "{\"key\":\"value\"}", "application/json");
+```
+
+### gRPC 服务器
+
+完整的 gRPC 服务器，支持 Protocol Buffers 和全部 4 种 RPC 类型。
+
+```cpp
+#include <async_net/grpc/server.hpp>
+
+grpc::server srv(ctx, 50051);
+
+// Unary RPC
+srv.register_unary_handler<Request, Response>(
+    "/package.Service/Method",
+    [](const Request& req, grpc::call_context& ctx) -> Task<grpc::status> {
+        // 处理请求，构建响应
+        co_return grpc::status::ok;
+    });
+
+// Server streaming RPC
+srv.register_server_stream_handler<Request, Response>(
+    "/package.Service/StreamMethod",
+    [](const Request& req, grpc::writer<Response>& writer, grpc::call_context& ctx) -> Task<grpc::status> {
+        co_await writer.write(response1);
+        co_await writer.write(response2);
+        co_await writer.finish();
+        co_return grpc::status::ok;
+    });
+
+// 添加拦截器用于日志/认证
+srv.add_interceptor([](const grpc::call_context& ctx) -> Task<grpc::status> {
+    // 调用前逻辑
+    co_return grpc::status::ok;
+});
+
+co_await srv.serve();
+```
+
+### FRPC 服务器（FlatBuffers RPC）
+
+使用 FlatBuffers 进行零拷贝序列化的轻量级 RPC。
+
+```cpp
+#include <async_net/frpc/server.hpp>
+
+frpc::server srv(ctx, 50052);
+
+// 使用 FlatBuffers 类型注册处理函数
+srv.register_unary_handler<echo::EchoRequest, echo::EchoResponse>(
+    "/echo.EchoService/Echo",
+    [](const echo::EchoRequest& req, grpc::call_context& ctx) -> Task<grpc::status> {
+        // req.message() - 访问 FlatBuffers 字段
+        // 使用 FlatBufferBuilder 构建响应
+        co_return grpc::status::ok;
+    });
+
+co_await srv.serve();
+```
+
+### TechEmpower 基准测试
+
+运行 TechEmpower Framework Benchmarks：
+
+```bash
+# 构建
+cd build
+cmake --build . --target te_bench
+
+# 运行服务器（全部 7 个端点）
+./benchmarks/async_net/te_bench 8080
+
+# 端点列表：
+# GET /json            - JSON 序列化
+# GET /plaintext       - 纯文本响应
+# GET /db              - 单次数据库查询
+# GET /queries?q=N     - 多次数据库查询
+# GET /fortunes        # Fortunes（HTML 渲染）
+# GET /updates?q=N     - 数据库更新
+# GET /cached-queries  - 缓存查询
 ```
 
 ## 平台支持

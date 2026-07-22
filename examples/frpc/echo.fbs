@@ -1,0 +1,22 @@
+// Echo service FlatBuffers schema
+// This file demonstrates the FRPC service definition format.
+// Use async_net_flatbuffers_library() in CMake to generate C++ code.
+
+namespace echo;
+
+// Echo service messages — demonstrates all 4 RPC types
+table EchoRequest {
+    message: string;
+}
+
+table EchoResponse {
+    message: string;
+}
+
+table HelloRequest {
+    name: string;
+}
+
+table HelloResponse {
+    greeting: string;
+}

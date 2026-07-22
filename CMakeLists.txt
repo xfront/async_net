@@ -116,6 +116,7 @@ endif()
 # Library sources - platform specific
 set(ASYNC_NET_SOURCES
     src/io/io_context.cpp
+    src/net/dns.cpp
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

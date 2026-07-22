@@ -1,7 +1,9 @@
 #pragma once
 
 #include "socket.hpp"
+#include "dns.hpp"
 #include "../detail/config.hpp"
+#include "../coroutine/task.hpp"
 #include <memory>
 #include <cstring>
 #include <string>
@@ -22,22 +24,12 @@ public:
         memset(&addr_, 0, sizeof(addr_));
         addr_.sin_family = AF_INET;
         addr_.sin_port = htons(port);
-        // Try numeric IP first
+        // Try numeric IP first (no blocking)
         if (::inet_pton(AF_INET, addr, &addr_.sin_addr) <= 0) {
-#ifndef ASYNC_NET_WINDOWS
-            // Resolve hostname via DNS
-            struct addrinfo hints{};
-            hints.ai_family = AF_INET;
-            hints.ai_socktype = SOCK_DGRAM;
-            struct addrinfo* res = nullptr;
-            if (::getaddrinfo(addr, nullptr, &hints, &res) == 0 && res) {
-                auto* sin = reinterpret_cast<const struct sockaddr_in*>(res->ai_addr);
-                addr_.sin_addr = sin->sin_addr;
-                ::freeaddrinfo(res);
-            }
-#else
+            // Non-numeric: leave as INADDR_ANY.
+            // Use socket::async_resolve() or socket::async_send_to(buf, host, port)
+            // for async hostname resolution.
             addr_.sin_addr.s_addr = INADDR_ANY;
-#endif
         }
     }
 
@@ -145,6 +137,25 @@ public:
             }
         };
         return SendToAwaiter{*this, buf, to, nullptr};
+    }
+
+    // Async send to host:port (with fully async DNS resolution)
+    Task<ssize_t> async_send_to(const_buffer buf, const char* host, uint16_t port) {
+        auto result = co_await async_net::net::async_resolve(get_io_context(), std::string(host), port);
+        if (result.error != 0) {
+            co_return -1;
+        }
+        endpoint to(result.addr);
+        co_return co_await async_send_to(buf, to);
+    }
+
+    // Async resolve hostname to endpoint (fully async DNS)
+    Task<endpoint> async_resolve(const char* host, uint16_t port) {
+        auto result = co_await async_net::net::async_resolve(get_io_context(), std::string(host), port);
+        if (result.error != 0) {
+            co_return endpoint();
+        }
+        co_return endpoint(result.addr);
     }
 
     // Synchronous receive (for simple cases)

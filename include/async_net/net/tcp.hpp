@@ -1,11 +1,11 @@
 #pragma once
 
 #include "socket.hpp"
+#include "dns.hpp"
 #include "../detail/config.hpp"
 #include <memory>
 #include <cstring>
 #include <string>
-#include <thread>
 
 namespace async_net::tcp {
 
@@ -128,75 +128,16 @@ public:
     }
 
     // Convenience: connect to host:port (supports IP addresses and hostnames)
-    // Uses async DNS resolution via background thread for hostnames.
+    // Uses fully async DNS resolution (UDP + coroutines, no blocking getaddrinfo).
     Task<int> async_connect(const char* host, uint16_t port) {
-        struct sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(port);
-
-        // Fast path: try numeric IP first
-        if (::inet_pton(AF_INET, host, &addr.sin_addr) > 0) {
-            co_return co_await async_connect(
-                reinterpret_cast<const struct sockaddr*>(&addr), sizeof(addr));
-        }
-
-        // Slow path: async DNS resolution via background thread + getaddrinfo
-        struct DnsResult {
-            struct sockaddr_in addr{};
-            int error = -1;
-        };
-        auto result = std::make_shared<DnsResult>();
-
-        struct DnsAwaiter {
-            io_context& ioc_;
-            std::string host_;
-            uint16_t port_;
-            std::shared_ptr<DnsResult> result_;
-
-            bool await_ready() const noexcept { return false; }
-
-            void await_suspend(std::coroutine_handle<> h) {
-                auto host_copy = host_;
-                auto port_copy = port_;
-                auto result_ptr = result_;
-                auto* ioc = &ioc_;
-
-                std::thread([host_copy, port_copy, result_ptr, h, ioc]() mutable {
-                    struct addrinfo hints{};
-                    hints.ai_family = AF_INET;
-                    hints.ai_socktype = SOCK_STREAM;
-                    hints.ai_protocol = IPPROTO_TCP;
-
-                    struct addrinfo* res = nullptr;
-                    std::string port_str = std::to_string(port_copy);
-                    int ret = ::getaddrinfo(host_copy.c_str(), port_str.c_str(), &hints, &res);
-
-                    if (ret == 0 && res != nullptr) {
-                        if (res->ai_family == AF_INET) {
-                            auto* sin = reinterpret_cast<const struct sockaddr_in*>(res->ai_addr);
-                            result_ptr->addr = *sin;
-                            result_ptr->error = 0;
-                        }
-                        ::freeaddrinfo(res);
-                    }
-
-                    // Resume coroutine in the io_context event loop thread
-                    ioc->post([h]() mutable { h.resume(); });
-                }).detach();
-            }
-
-            int await_resume() const {
-                return result_->error;
-            }
-        };
-
-        int dns_err = co_await DnsAwaiter{get_io_context(), std::string(host), port, result};
-        if (dns_err != 0) {
+        // Fully async DNS resolution via UDP socket + coroutines
+        auto result = co_await net::async_resolve(get_io_context(), std::string(host), port);
+        if (result.error != 0) {
             co_return -1;
         }
 
         co_return co_await async_connect(
-            reinterpret_cast<const struct sockaddr*>(&result->addr), sizeof(result->addr));
+            reinterpret_cast<const struct sockaddr*>(&result.addr), sizeof(result.addr));
     }
 };
 

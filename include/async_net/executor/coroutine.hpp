@@ -23,6 +23,7 @@ namespace async_net {
 // ---------------------------------------------------------------------------
 struct run_on {
     executor& ex_;
+    explicit run_on(executor& ex) : ex_(ex) {}
 };
 
 struct RunOnAwaiter {

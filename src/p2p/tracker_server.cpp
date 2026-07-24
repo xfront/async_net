@@ -4,7 +4,10 @@
 #include <algorithm>
 #include <cstring>
 #include <sstream>
+#include <async_net/detail/config.hpp>
+#ifndef ASYNC_NET_WINDOWS
 #include <arpa/inet.h>
+#endif
 
 namespace async_net::p2p {
 

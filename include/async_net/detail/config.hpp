@@ -26,6 +26,9 @@
     #pragma comment(lib, "mswsock.lib")
     using socket_t = SOCKET;
     constexpr socket_t invalid_socket = INVALID_SOCKET;
+    // Windows doesn't have ssize_t, define it using standard C++ type
+    #include <cstddef>
+    using ssize_t = std::ptrdiff_t;
 #else
     #include <sys/socket.h>
     #include <netinet/in.h>

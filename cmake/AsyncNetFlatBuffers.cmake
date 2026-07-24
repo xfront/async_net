@@ -20,8 +20,21 @@ function(async_net_flatbuffers_generate)
         message(FATAL_ERROR "async_net_flatbuffers_generate: FBS_FILES is required")
     endif()
 
-    # Find flatc
-    find_program(FLATC_EXECUTABLE flatc)
+    # Find flatc - check vcpkg tools directory first
+    if(DEFINED _VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+        # vcpkg installs tools to <installed>/<triplet>/tools/<package>/
+        set(VCPKG_TOOLS_DIR "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/flatbuffers")
+        if(EXISTS "${VCPKG_TOOLS_DIR}/flatc")
+            set(FLATC_EXECUTABLE "${VCPKG_TOOLS_DIR}/flatc")
+        elseif(EXISTS "${VCPKG_TOOLS_DIR}/flatc.exe")
+            set(FLATC_EXECUTABLE "${VCPKG_TOOLS_DIR}/flatc.exe")
+        endif()
+    endif()
+
+    if(NOT FLATC_EXECUTABLE)
+        find_program(FLATC_EXECUTABLE flatc)
+    endif()
+
     if(NOT FLATC_EXECUTABLE)
         message(FATAL_ERROR "async_net_flatbuffers_generate: flatc not found. Install flatbuffers-compiler.")
     endif()
@@ -114,12 +127,42 @@ function(async_net_flatbuffers_library)
         FBS_PATHS ${ARG_FBS_PATHS}
     )
 
-    # Link FlatBuffers headers
+    # Link FlatBuffers headers/library
     find_package(FlatBuffers CONFIG)
     if(FlatBuffers_FOUND)
         target_link_libraries(${ARG_NAME} INTERFACE flatbuffers)
     else()
-        # Fallback: just add include directory
-        target_include_directories(${ARG_NAME} INTERFACE /usr/include)
+        # Try module mode for system-installed flatbuffers
+        find_package(FlatBuffers MODULE)
+        if(FlatBuffers_FOUND)
+            target_link_libraries(${ARG_NAME} INTERFACE flatbuffers)
+        else()
+            # Fallback: find library manually
+            # On macOS, also check Homebrew paths
+            set(_FB_HINTS "")
+            if(APPLE)
+                if(EXISTS "/opt/homebrew")
+                    list(APPEND _FB_HINTS "/opt/homebrew/lib" "/opt/homebrew/lib64")
+                endif()
+                if(EXISTS "/usr/local")
+                    list(APPEND _FB_HINTS "/usr/local/lib")
+                endif()
+            endif()
+
+            find_library(FLATBUFFERS_LIB NAMES flatbuffers flatbuffers.a
+                HINTS ${_FB_HINTS})
+            if(FLATBUFFERS_LIB)
+                target_link_libraries(${ARG_NAME} INTERFACE ${FLATBUFFERS_LIB})
+                # Find include directory
+                find_path(FLATBUFFERS_INCLUDE_DIR flatbuffers/flatbuffers.h
+                    HINTS ${_FB_HINTS}
+                    PATH_SUFFIXES include)
+                if(FLATBUFFERS_INCLUDE_DIR)
+                    target_include_directories(${ARG_NAME} INTERFACE ${FLATBUFFERS_INCLUDE_DIR})
+                endif()
+            else()
+                message(FATAL_ERROR "FlatBuffers library not found. Install via: apt install libflatbuffers-dev / brew install flatbuffers / vcpkg install flatbuffers")
+            endif()
+        endif()
     endif()
 endfunction()

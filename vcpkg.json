@@ -22,6 +22,10 @@
     {
       "name": "protobuf",
       "platform": "!uwp"
+    },
+    {
+      "name": "flatbuffers",
+      "platform": "!uwp"
     }
   ],
   "features": {

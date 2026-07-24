@@ -7,10 +7,12 @@
 #include <wolfssl/options.h>
 #include <wolfssl/ssl.h>
 #include <wolfssl/error-ssl.h>
+#ifndef ASYNC_NET_WINDOWS
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#endif
 #include <cstdio>
 #include <cstring>
 #include <cerrno>

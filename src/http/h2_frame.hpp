@@ -8,7 +8,10 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <async_net/detail/config.hpp>
+#ifndef ASYNC_NET_WINDOWS
 #include <arpa/inet.h>  // htonl, ntohl
+#endif
 
 namespace async_net::http::h2 {
 

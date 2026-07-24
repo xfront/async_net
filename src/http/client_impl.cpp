@@ -5,7 +5,9 @@
 #ifdef ASYNC_NET_HAS_HTTP3
 #include <async_net/http/http3_session.hpp>
 #include <async_net/net/udp.hpp>
+#ifndef ASYNC_NET_WINDOWS
 #include <arpa/inet.h>
+#endif
 #endif
 
 namespace async_net::http {

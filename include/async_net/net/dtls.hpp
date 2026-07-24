@@ -4,7 +4,9 @@
 #include "ssl.hpp"
 #include <cstddef>
 #include <cstdint>
+#ifndef ASYNC_NET_WINDOWS
 #include <sys/socket.h>
+#endif
 
 namespace async_net::net {
 

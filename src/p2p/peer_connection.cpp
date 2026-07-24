@@ -1,10 +1,13 @@
 #include "../../include/async_net/p2p/peer_connection.hpp"
 #include "../../include/async_net/executor/schedule.hpp"
+#include "../../include/async_net/detail/config.hpp"
+#ifndef ASYNC_NET_WINDOWS
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <unistd.h>
+#endif
 #include <cstring>
 #include <cerrno>
 

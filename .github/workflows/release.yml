@@ -1,0 +1,194 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build liburing-dev flatbuffers-compiler libflatbuffers-dev
+
+      - name: Setup vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git
+          ./vcpkg/bootstrap-vcpkg.sh
+
+      - name: Install vcpkg dependencies
+        run: ./vcpkg/vcpkg install
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake \
+            -DASYNC_NET_WITH_SSL=ON \
+            -DASYNC_NET_SSL_BACKEND=wolfssl \
+            -DASYNC_NET_WITH_HTTP2=ON \
+            -DASYNC_NET_WITH_HTTP3=ON \
+            -DASYNC_NET_WITH_GRPC=ON
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Package
+        run: |
+          cd build
+          tar -czvf ../async-net-linux-x64.tar.gz \
+            libasync_net.a \
+            examples/ 2>/dev/null || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: async-net-linux-x64
+          path: async-net-linux-x64.tar.gz
+
+  build-macos:
+    name: Build macOS
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: brew install ninja flatbuffers
+
+      - name: Setup vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git
+          ./vcpkg/bootstrap-vcpkg.sh
+
+      - name: Install vcpkg dependencies
+        run: ./vcpkg/vcpkg install
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake \
+            -DASYNC_NET_WITH_SSL=ON \
+            -DASYNC_NET_SSL_BACKEND=wolfssl \
+            -DASYNC_NET_WITH_HTTP2=ON \
+            -DASYNC_NET_WITH_HTTP3=ON \
+            -DASYNC_NET_WITH_GRPC=ON
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Package
+        run: |
+          cd build
+          tar -czvf ../async-net-macos-arm64.tar.gz \
+            libasync_net.a \
+            examples/ 2>/dev/null || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: async-net-macos-arm64
+          path: async-net-macos-arm64.tar.gz
+
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git
+          .\vcpkg\bootstrap-vcpkg.bat
+
+      - name: Install vcpkg dependencies
+        run: .\vcpkg\vcpkg install
+
+      - name: Configure CMake
+        run: |
+          cmake -B build `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$env:GITHUB_WORKSPACE\vcpkg\scripts\buildsystems\vcpkg.cmake" `
+            -DASYNC_NET_WITH_SSL=ON `
+            -DASYNC_NET_SSL_BACKEND=wolfssl `
+            -DASYNC_NET_WITH_HTTP2=ON `
+            -DASYNC_NET_WITH_HTTP3=ON `
+            -DASYNC_NET_WITH_GRPC=ON
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Package
+        run: |
+          cd build
+          7z a ../async-net-windows-x64.zip `
+            Release\async_net.lib `
+            Release\*.exe 2>$null
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: async-net-windows-x64
+          path: async-net-windows-x64.zip
+
+  release:
+    name: Create Release
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            echo "## Changes since $PREV_TAG" > CHANGELOG.md
+            git log --pretty=format:"- %s (%h)" $PREV_TAG..HEAD >> CHANGELOG.md
+          else
+            echo "## Initial release" > CHANGELOG.md
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: async-net ${{ github.event.inputs.tag || github.ref_name }}
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
+          files: |
+            artifacts/async-net-linux-x64/async-net-linux-x64.tar.gz
+            artifacts/async-net-macos-arm64/async-net-macos-arm64.tar.gz
+            artifacts/async-net-windows-x64/async-net-windows-x64.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -7,10 +7,12 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/bio.h>
+#ifndef ASYNC_NET_WINDOWS
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#endif
 #include <cstdio>
 #include <cstring>
 #include <cerrno>

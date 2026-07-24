@@ -1,6 +1,7 @@
 // HTTP/3 Session — wolfSSL + ngtcp2 + self-contained QPACK/H3 framing
 #pragma once
 
+#include <async_net/detail/config.hpp>
 #include <async_net/http/types.hpp>
 #include <async_net/http/handler.hpp>
 #include <async_net/coroutine/task.hpp>
@@ -9,7 +10,6 @@
 #include <functional>
 #include <vector>
 #include <memory>
-#include <sys/socket.h>
 
 namespace async_net::http {
 

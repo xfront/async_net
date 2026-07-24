@@ -1,4 +1,7 @@
+#include <async_net/detail/config.hpp>
+#ifndef ASYNC_NET_WINDOWS
 #include <arpa/inet.h>
+#endif
 
 // HTTP/3 Session implementation — ngtcp2 + self-contained QPACK/H3
 extern "C" {
@@ -60,7 +63,7 @@ static int cb_stream_close(ngtcp2_conn* conn, uint32_t flags,
                            void* user_data, void* stream_user_data);
 
 static int cb_acked_stream_data_offset(ngtcp2_conn* conn, int64_t stream_id,
-                                       uint64_t offset, size_t datalen,
+                                       uint64_t offset, uint64_t datalen,
                                        void* user_data, void* stream_user_data);
 
 static int cb_extend_max_stream_data(ngtcp2_conn* conn, int64_t stream_id,
@@ -448,7 +451,7 @@ static int cb_stream_close(ngtcp2_conn* conn, uint32_t flags,
 }
 
 static int cb_acked_stream_data_offset(ngtcp2_conn* conn, int64_t stream_id,
-                                       uint64_t offset, size_t datalen,
+                                       uint64_t offset, uint64_t datalen,
                                        void* user_data, void* /*stream_user_data*/) {
     return 0;
 }

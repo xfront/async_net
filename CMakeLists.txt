@@ -301,7 +301,23 @@ if(ASYNC_NET_HAS_HTTP3)
             PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib"
             NO_DEFAULT_PATH)
     endif()
-    target_link_libraries(async_net PUBLIC ${NGTCP2_CRYPTO_SSL_LIB} ngtcp2::ngtcp2_static)
+
+    # Link ngtcp2 - try imported target first, then find library directly
+    if(TARGET ngtcp2::ngtcp2_static)
+        target_link_libraries(async_net PUBLIC ${NGTCP2_CRYPTO_SSL_LIB} ngtcp2::ngtcp2_static)
+    elseif(TARGET ngtcp2::ngtcp2)
+        target_link_libraries(async_net PUBLIC ${NGTCP2_CRYPTO_SSL_LIB} ngtcp2::ngtcp2)
+    else()
+        # Fallback: find library directly
+        find_library(NGTCP2_LIB NAMES ngtcp2 ngtcp2_static
+            PATHS "${_VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib"
+            NO_DEFAULT_PATH)
+        if(NGTCP2_LIB)
+            target_link_libraries(async_net PUBLIC ${NGTCP2_CRYPTO_SSL_LIB} ${NGTCP2_LIB})
+        else()
+            message(FATAL_ERROR "ngtcp2 library not found")
+        endif()
+    endif()
 endif()
 
 # Platform-specific linkage

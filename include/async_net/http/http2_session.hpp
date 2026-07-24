@@ -2,6 +2,7 @@
 // Wraps frame parsing, HPACK, stream management, and flow control.
 #pragma once
 
+#include <async_net/detail/config.hpp>
 #include <async_net/http/types.hpp>
 #include <async_net/http/handler.hpp>
 #include <async_net/coroutine/task.hpp>

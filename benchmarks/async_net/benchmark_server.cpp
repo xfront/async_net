@@ -11,14 +11,14 @@
 // Database tables (World, Fortune) are simulated in-memory.
 // Uses async_net HTTP server with C++20 coroutines.
 //
-// Multi-process architecture for multi-core utilization:
+// Nginx-style master-worker architecture:
+//   - Master process manages worker lifecycle via process_manager
 //   - Uses SO_REUSEPORT to allow multiple processes to bind the same port
 //   - Each worker process has its own io_context and server instance
 //   - Kernel distributes incoming connections across workers (load balancing)
 //   - Each worker has its own copy of the in-memory database (no lock contention)
+//   - SIGHUP triggers graceful reload: spawn new workers, stop old ones
 
-#include <async_net/http/server.hpp>
-#include <async_net/io/io_context.hpp>
 #include <algorithm>
 #include <array>
 #include <random>
@@ -29,12 +29,9 @@
 #include <iostream>
 #include <ctime>
 #include <thread>
-#include <csignal>
-
-#ifndef _WIN32
-#include <unistd.h>
-#include <sys/wait.h>
-#endif
+#include <async_net/http/server.hpp>
+#include <async_net/io/io_context.hpp>
+#include <async_net/executor/process_manager.hpp>
 
 using namespace async_net;
 using namespace async_net::http;
@@ -339,27 +336,7 @@ static void setup_routes(server& srv) {
 }
 
 // ============================================================================
-// Worker process (runs one io_context + server)
-// ============================================================================
-
-static void run_worker(uint16_t port, int worker_id, int threads) {
-    // Each worker has its own io_context and server
-    // With SO_REUSEPORT, kernel distributes connections across workers
-    io_context ctx;
-
-    // Enable SO_REUSEPORT for multi-process binding to same port
-    server srv(ctx, port, "0.0.0.0", /*reuse_port=*/true);
-    setup_routes(srv);
-
-    if (worker_id == 0) {
-        std::cout << "Backend: " << ctx.backend().name() << std::endl;
-    }
-
-    srv.run([](server& s) { return s.serve(); }, threads);
-}
-
-// ============================================================================
-// Main
+// Main — Nginx-style master-worker model via run_mp_master
 // ============================================================================
 
 int main(int argc, char* argv[]) {
@@ -393,74 +370,24 @@ int main(int argc, char* argv[]) {
     std::cout << "    GET /fortunes                — Fortunes" << std::endl;
     std::cout << "    GET /updates?queries=N       — DB Updates (1-500)" << std::endl;
     std::cout << "    GET /cached-queries?count=N  — Caching (1-500)" << std::endl;
+    std::cout << "  SIGHUP: graceful reload, SIGTERM: shutdown" << std::endl;
     std::cout << "==============================================\n" << std::endl;
 
-#ifdef _WIN32
-    // Windows: single worker (no fork support)
-    std::cout << "[Windows] Running single worker (fork not supported)" << std::endl;
-    try {
-        run_worker(port, 0, 1);
-    } catch (const std::exception& e) {
-        std::cerr << "Exception: " << e.what() << std::endl;
-        return 1;
-    }
-#else
-    // Unix: multi-process with SO_REUSEPORT
-    if (num_workers == 1) {
-        // Single worker mode
-        try {
-            run_worker(port, 0, 0);
-        } catch (const std::exception& e) {
-            std::cerr << "Exception: " << e.what() << std::endl;
-            return 1;
-        }
-    } else {
-        // Multi-worker mode: fork worker processes
-        std::vector<pid_t> child_pids;
-        child_pids.reserve(num_workers);
+    // Worker function: each worker gets its own io_context + server + config
+    auto worker = [port](int worker_id, io_context& ctx, const default_worker_config&) -> Task<void> {
+        server srv(ctx, port, "0.0.0.0", /*reuse_port=*/true);
+        setup_routes(srv);
 
-        // Handle SIGCHLD to reap zombie processes
-        signal(SIGCHLD, SIG_IGN);
-
-        for (unsigned int i = 0; i < num_workers; ++i) {
-            pid_t pid = fork();
-            if (pid < 0) {
-                std::cerr << "fork() failed" << std::endl;
-                // Kill existing children
-                for (pid_t p : child_pids) {
-                    kill(p, SIGTERM);
-                }
-                return 1;
-            } else if (pid == 0) {
-                // Child process
-                try {
-                    run_worker(port, static_cast<int>(i), 1);
-                } catch (const std::exception& e) {
-                    std::cerr << "Worker " << i << " exception: " << e.what() << std::endl;
-                }
-                _exit(0);
-            } else {
-                // Parent process
-                child_pids.push_back(pid);
-                std::cout << "[master] Spawned worker " << i << " (pid=" << pid << ")" << std::endl;
-            }
+        if (worker_id == 0) {
+            std::cout << "Backend: " << ctx.backend().name() << std::endl;
         }
 
-        std::cout << "[master] All " << num_workers << " workers running" << std::endl;
+        co_await srv.serve();
+    };
 
-        // Wait for children (will be interrupted by signals)
-        while (true) {
-            int status;
-            pid_t pid = wait(&status);
-            if (pid < 0) {
-                if (errno == ECHILD) break;  // No more children
-                if (errno == EINTR) continue;  // Interrupted by signal
-                break;
-            }
-            std::cout << "[master] Worker pid=" << pid << " exited" << std::endl;
-        }
-    }
-#endif
-
-    return 0;
+    // Run with nginx-style master-worker model
+    default_worker_config cfg;
+    cfg.mode = worker_mode::auto_mode;
+    cfg.num_workers = num_workers;
+    return run_mp_master(std::move(worker), cfg);
 }

@@ -16,9 +16,6 @@
 //   Windows: Shared acceptor - multiple io_context instances share one acceptor,
 //            IOCP distributes completed accepts across waiting threads
 
-#include <async_net/http/server.hpp>
-#include <async_net/io/io_context.hpp>
-#include <async_net/io/tcp.hpp>
 #include <algorithm>
 #include <random>
 #include <string>
@@ -29,6 +26,11 @@
 #include <ctime>
 #include <mutex>
 #include <memory>
+
+#include <async_net/http/server.hpp>
+#include <async_net/io/io_context.hpp>
+#include <async_net/io/tcp.hpp>
+#include <async_net/executor/process_manager.hpp>
 
 using namespace async_net;
 using namespace async_net::http;
@@ -331,17 +333,22 @@ int main(int argc, char* argv[]) {
     std::cout << "    GET /cached-queries?count=N  — Caching (1-500)" << std::endl;
     std::cout << "=============================================================\n" << std::endl;
 
-    // Create server and setup routes
-    io_context ctx;
-    server srv(ctx, port);
-    setup_routes(srv);
+    // Worker function: each worker gets its own io_context + server + config
+    auto worker = [port](int worker_id, io_context& ctx, const default_worker_config&) -> Task<void> {
 
-    std::cout << "Backend: " << ctx.backend().name() << std::endl;
+        server srv(ctx, port, "0.0.0.0", /*reuse_port=*/true);
+        setup_routes(srv);
 
-    // Multi-threaded serving — automatically selects best strategy per platform:
-    //   Linux/macOS: SO_REUSEPORT + per-worker io_context/server
-    //   Windows:     Shared IOCP backend + multi-threaded event loop
-    srv.run([](server& s) { return s.serve(); }, num_workers);
+        if (worker_id == 0) {
+            std::cout << "Backend: " << ctx.backend().name() << std::endl;
+        }
 
-    return 0;
+        co_await srv.serve();
+    };
+
+    // Run with nginx-style master-worker model
+    default_worker_config cfg;
+    cfg.mode = worker_mode::thread;
+    cfg.num_workers = num_workers;
+    return run_mp_master(std::move(worker), cfg);
 }

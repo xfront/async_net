@@ -1,4 +1,5 @@
-// OpenSSL-compatible crypto backend implementation (AWS-LC / LibreSSL)
+// OpenSSL-compatible crypto backend policy (AWS-LC / LibreSSL)
+// Replaces free functions with OpenSslCryptoPolicy static methods.
 
 #include "crypto_backend.hpp"
 
@@ -8,14 +9,18 @@
 #include <openssl/rand.h>
 #include <openssl/ssl.h>
 
-namespace async_net::crypto::backend {
+namespace async_net::crypto {
 
-void init() {
+// ============================================================================
+// OpenSslCryptoPolicy — static methods wrapping OpenSSL-compatible crypto API
+// ============================================================================
+
+void OpenSslCryptoPolicy::init() {
     static bool done = false;
     if (!done) { OPENSSL_init_ssl(0, nullptr); done = true; }
 }
 
-std::vector<uint8_t> aes_gcm_encrypt(
+std::vector<uint8_t> OpenSslCryptoPolicy::aes_gcm_encrypt(
     const uint8_t* key, size_t key_len,
     const uint8_t* iv, size_t iv_len,
     const uint8_t* plaintext, size_t len,
@@ -65,7 +70,7 @@ std::vector<uint8_t> aes_gcm_encrypt(
     return out;
 }
 
-std::optional<std::vector<uint8_t>> aes_gcm_decrypt(
+std::optional<std::vector<uint8_t>> OpenSslCryptoPolicy::aes_gcm_decrypt(
     const uint8_t* key, size_t key_len,
     const uint8_t* iv, size_t iv_len,
     const uint8_t* ciphertext, size_t len,
@@ -121,12 +126,12 @@ std::optional<std::vector<uint8_t>> aes_gcm_decrypt(
     return out;
 }
 
-std::vector<uint8_t> random_bytes(size_t len) {
+std::vector<uint8_t> OpenSslCryptoPolicy::random_bytes(size_t len) {
     std::vector<uint8_t> buf(len);
     if (RAND_bytes(buf.data(), static_cast<int>(len)) != 1) return {};
     return buf;
 }
 
-} // namespace async_net::crypto::backend
+} // namespace async_net::crypto
 
 #endif // ASYNC_NET_SSL_AWSLC || ASYNC_NET_SSL_LIBRESSL

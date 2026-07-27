@@ -1,8 +1,21 @@
 #pragma once
 
+// ---------------------------------------------------------------------------
+// HTTP Server — Acceptor/Service Handler architecture
+//
+// The server holds shared routing state (server_context) and uses
+// network::acceptor<service_handler> for passive connection establishment.
+//
+// Service handlers (http11_handler, https_handler) inherit from
+// network::service_handler and implement the connection lifecycle.
+// ---------------------------------------------------------------------------
+
 #include <async_net/http/types.hpp>
 #include <async_net/http/handler.hpp>
 #include <async_net/http/websocket.hpp>
+#include <async_net/network/service_handler.hpp>
+#include <async_net/network/tls_handler.hpp>
+#include <async_net/network/acceptor.hpp>
 #include <async_net/coroutine/task.hpp>
 #include <async_net/io/io_context.hpp>
 #include <async_net/io/tcp.hpp>
@@ -10,133 +23,155 @@
 #include <string>
 #include <vector>
 #include <utility>
-#include <unordered_set>
-#include <thread>
-#include <atomic>
 #include <memory>
+#include <atomic>
+#include <unordered_set>
+#include <mutex>
 
 #ifdef ASYNC_NET_HAS_SSL
 #include <async_net/io/ssl.hpp>
+#include <async_net/http/http2_session.hpp>
 #endif
 
 #ifdef ASYNC_NET_HAS_HTTP3
-#include <string>
+#include <async_net/http/http3_session.hpp>
+#include <async_net/io/udp.hpp>
+#include <async_net/network/connector.hpp>
+#ifndef ASYNC_NET_WINDOWS
+#include <arpa/inet.h>
+#endif
 #endif
 
 namespace async_net::http {
 
 // ---------------------------------------------------------------------------
-// HTTP Server — route-based request handling with keep-alive
+// Forward declarations
+// ---------------------------------------------------------------------------
+
+class server;
+class http11_handler;
+class https_handler;
+
+// ---------------------------------------------------------------------------
+// server_context — shared routing state for all service handlers
+// ---------------------------------------------------------------------------
+
+struct server_context {
+    io_context* io_ctx = nullptr;
+    uint16_t port = 0;
+    std::string addr = "0.0.0.0";
+    bool reuse_port = false;
+    std::atomic<bool> running{true};
+
+    // Route table
+    struct route_entry { method m; std::string path; handler_fn handler; };
+    std::vector<route_entry> routes;
+    std::vector<std::pair<std::string, ws::ws_handler_fn>> ws_routes;
+    handler_fn default_handler;
+
+    // H2/H3 push
+    using push_provider = std::function<std::vector<std::pair<request, response>>(const request&)>;
+    push_provider push_provider_fn;
+
+    // H3 config
+    bool h3_enabled = false;
+    std::string h3_cert, h3_key;
+    std::unique_ptr<Task<void>> h3_task;  // Keeps H3 coroutine alive
+
+    // Active acceptors (created lazily by serve methods)
+    std::unique_ptr<network::acceptor<http11_handler>> h1_acceptor;
+#ifdef ASYNC_NET_HAS_SSL
+    std::unique_ptr<network::acceptor<https_handler>> tls_acceptor;
+#endif
+};
+
+// ---------------------------------------------------------------------------
+// server — coordinating class
 // ---------------------------------------------------------------------------
 
 class server {
 public:
     server(io_context& ctx, uint16_t port, const char* addr = "0.0.0.0", bool reuse_port = false);
 
-    // Register a route handler
+    // --- Route registration ---
     void route(method m, const std::string& path, handler_fn handler);
-
-    // Register a WebSocket route (path-based, GET method implied)
     void ws_route(const std::string& path, ws::ws_handler_fn handler);
-
-    // Register a default handler (for unmatched routes, typically returns 404)
     void default_handler(handler_fn handler);
 
-    // Set push provider for H2/H3 server push
-    // Returns a list of (promised_request, push_response) pairs to push
-    using push_provider = std::function<std::vector<std::pair<request, response>>(const request&)>;
+    using push_provider = server_context::push_provider;
     void set_push_provider(push_provider provider);
 
-    // Start serving (blocks until io_context stops)
+    // --- Serve methods ---
+
+    /// HTTP/1.1 plain text
     Task<void> serve();
 
 #ifdef ASYNC_NET_HAS_SSL
-    // Start serving with TLS
-    Task<void> serve_tls(ssl::context& ssl_ctx);
+    /// TLS + ALPN (HTTP/2 with HTTP/1.1 fallback)
+    Task<void> serve(ssl::context& ssl_ctx);
 
-    // Start serving with TLS + HTTP/2 (ALPN: h2 + http/1.1)
+    /// TLS + HTTP/2 only (ALPN: h2 + http/1.1)
     Task<void> serve_h2(ssl::context& ssl_ctx);
 #endif
 
 #ifdef ASYNC_NET_HAS_HTTP3
-    // Start serving HTTP/3 over QUIC/UDP
-    // cert_file/key_file: PEM files for TLS
+    /// HTTP/3 over QUIC/UDP
     Task<void> serve_h3(const std::string& cert_file, const std::string& key_file);
 #endif
 
-    // Stop the server
+    /// Serve configured protocols (set via builder)
+    Task<void> serve_configured();
+
+    // --- Control ---
     void stop();
 
-    // Multi-threaded serving — utilizes multiple CPU cores.
-    //
-    // serve_fn: a function that takes a server& and returns Task<void>.
-    //           e.g., [](server& s) { return s.serve(); }
-    //                [](server& s) { return s.serve_tls(ssl_ctx); }
-    //                [](server& s) { return s.serve_h2(ssl_ctx); }
-    //
-    // Linux/epoll/kqueue: N threads share this server's io_context.
-    // Linux/io_uring:     SO_REUSEPORT + per-worker io_context/server.
-    // Windows/IOCP:       N threads share this server's io_context.
-    //
-    // Blocks until all workers exit (e.g., via stop() or signal).
-    void run(std::function<Task<void>(server&)> serve_fn, unsigned int num_threads = 0);
+    // --- Accessors ---
+    io_context& get_io_context() { return *ctx_->io_ctx; }
+    server_context& context() { return *ctx_; }
+    const server_context& context() const { return *ctx_; }
 
 private:
-    struct route_entry {
-        method m;
-        std::string path;
-        handler_fn handler;
-    };
+    std::shared_ptr<server_context> ctx_;  // Shared with all handlers
 
-    struct ws_route_entry {
-        std::string path;
-        ws::ws_handler_fn handler;
-    };
+    friend class http11_handler;
+    friend class https_handler;
+    friend class server_builder;
+};
 
-    io_context& ctx_;
-    std::unique_ptr<tcp::acceptor> acceptor_;  // Created lazily in serve()
-    uint16_t port_;
-    std::string addr_;
-    bool reuse_port_;
-    std::vector<route_entry> routes_;
-    std::vector<ws_route_entry> ws_routes_;
-    handler_fn default_handler_;
-    push_provider push_provider_;
-    bool running_ = true;
+// ============================================================================
+// Service Handler classes (defined in server_impl.cpp)
+// ============================================================================
 
-    // Active connection tasks (prevent destruction)
-    // Protected by active_tasks_mutex_ for thread safety in multi-threaded mode
-    std::unordered_set<Task<void>*> active_tasks_;
-    std::mutex active_tasks_mutex_;
+// ---------------------------------------------------------------------------
+// http11_handler — plain HTTP/1.1 keep-alive handler
+// ---------------------------------------------------------------------------
 
-    // Handle a single connection (HTTP/1.1 keep-alive loop)
-    Task<void> handle_connection(tcp::socket sock);
+class http11_handler : public network::service_handler<tcp::socket> {
+public:
+    explicit http11_handler(std::shared_ptr<server_context> ctx)
+        : ctx_(std::move(ctx)) {}
 
-    // Handle a WebSocket connection (after 101 handshake)
-    Task<void> handle_websocket(tcp::socket& sock, const request& upgrade_req,
-                                ws::ws_handler_fn handler);
+    Task<void> run() override;
 
-    // Find WebSocket handler for a path
-    ws::ws_handler_fn* find_ws_handler(const std::string& path);
+private:
+    std::shared_ptr<server_context> ctx_;
+};
+
+// ---------------------------------------------------------------------------
+// https_handler — TLS + ALPN handler (HTTP/2 with HTTP/1.1 fallback)
+// ---------------------------------------------------------------------------
 
 #ifdef ASYNC_NET_HAS_SSL
-    // Handle a single TLS connection
-    Task<void> handle_tls_connection(tcp::socket sock, ssl::context& ssl_ctx);
+class https_handler : public network::tls_handler {
+public:
+    https_handler(std::shared_ptr<server_context> ctx, ssl::context& ssl_ctx)
+        : tls_handler(ssl_ctx, true), ctx_(std::move(ctx)) {}
 
-    // Handle a single H2 connection (TLS + ALPN)
-    Task<void> handle_h2_connection(tcp::socket sock, ssl::context& ssl_ctx);
-#endif
+    Task<void> run_tls(ssl::stream& strm) override;
 
-    // Read a complete HTTP request from socket
-    Task<std::optional<request>> read_request(tcp::socket& sock);
-
-    // Find and dispatch handler for a request
-    Task<response> dispatch(const request& req);
-
-    // Write a response to socket
-    Task<bool> write_response(tcp::socket& sock, const response& resp);
-
-    void cleanup_task(Task<void>* task);
+private:
+    std::shared_ptr<server_context> ctx_;
 };
+#endif
 
 } // namespace async_net::http

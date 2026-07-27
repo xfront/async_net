@@ -166,7 +166,7 @@ void io_context::stop() {
     backend_->wake();
 }
 
-void io_context::post(std::function<void()> func) {
+void io_context::post_impl(std::function<void()> func) {
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
         pending_.push(std::move(func));

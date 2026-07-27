@@ -21,6 +21,32 @@ public:
 };
 
 // ---------------------------------------------------------------------------
+// ExecutorBase<Derived> — CRTP base for executors ()
+//
+/// Eliminates virtual dispatch overhead by providing a final override of
+// post() that forwards to static_cast<Derived*>(this)->post_impl().
+//
+/// Concrete executors should:
+///   1. Inherit from ExecutorBase<Concrete> instead of executor directly
+///   2. Provide a public (non-virtual) post_impl() method
+//
+/// Usage:
+///   class my_executor : public ExecutorBase<my_executor> {
+///   public:
+///       void post_impl(std::function<void()> fn) { /* ... */ }
+///   };
+// ---------------------------------------------------------------------------
+template<typename Derived>
+class ExecutorBase : public executor {
+public:
+    // Final override — prevents further virtual dispatch.
+    // The compiler can devirtualize calls through a Derived* or Derived&.
+    void post(std::function<void()> fn) final {
+        static_cast<Derived*>(this)->post_impl(std::move(fn));
+    }
+};
+
+// ---------------------------------------------------------------------------
 // any_executor — type-erased executor wrapper with shared ownership
 //
 // Useful when you need to store or pass an executor with value semantics

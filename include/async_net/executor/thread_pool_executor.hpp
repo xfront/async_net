@@ -11,11 +11,11 @@ namespace async_net {
 //
 // The thread_pool must outlive this executor (or be owned via shared_ptr).
 // ---------------------------------------------------------------------------
-class thread_pool_executor : public executor {
+class thread_pool_executor : public ExecutorBase<thread_pool_executor> {
 public:
     explicit thread_pool_executor(thread_pool& pool) : pool_(&pool) {}
 
-    void post(std::function<void()> fn) override {
+    void post_impl(std::function<void()> fn) {
         pool_->post(std::move(fn));
     }
 

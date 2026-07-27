@@ -16,7 +16,7 @@ namespace async_net {
 // Pure io_uring backend using raw syscalls (zero external dependencies).
 // Requires Linux kernel 5.1+ for basic operations, 5.11+ for full socket support.
 // Natively supports: recv, send, accept, connect — no epoll fallback needed.
-class IoUringBackend : public IoBackend {
+class IoUringBackend : public IoBackendBase<IoUringBackend> {
 public:
     explicit IoUringBackend(unsigned ring_size = 256);
     ~IoUringBackend() override;
@@ -24,23 +24,23 @@ public:
     IoUringBackend(const IoUringBackend&) = delete;
     IoUringBackend& operator=(const IoUringBackend&) = delete;
 
-    void poll(int timeout_ms) override;
-    bool register_socket(socket_t fd) override;
-    void deregister_socket(socket_t fd) override;
-    void async_read(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) override;
-    void async_write(socket_t fd, const void* buf, size_t len, std::shared_ptr<OperationContext> ctx) override;
-    void async_accept(socket_t listen_fd, socket_t* out_fd, std::shared_ptr<OperationContext> ctx) override;
-    void async_connect(socket_t fd, const struct sockaddr* addr, socklen_t addrlen, std::shared_ptr<OperationContext> ctx) override;
-    void async_recvfrom(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) override;
-    void async_sendto(socket_t fd, const void* buf, size_t len, const struct sockaddr* to, socklen_t tolen, std::shared_ptr<OperationContext> ctx) override;
-    void async_wait_readable(socket_t fd, std::shared_ptr<OperationContext> ctx) override;
-    void async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) override;
-    void wake() override;
+    void poll_impl(int timeout_ms);
+    bool register_impl(socket_t fd);
+    void deregister_impl(socket_t fd);
+    void async_read_impl(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx);
+    void async_write_impl(socket_t fd, const void* buf, size_t len, std::shared_ptr<OperationContext> ctx);
+    void async_accept_impl(socket_t listen_fd, socket_t* out_fd, std::shared_ptr<OperationContext> ctx);
+    void async_connect_impl(socket_t fd, const struct sockaddr* addr, socklen_t addrlen, std::shared_ptr<OperationContext> ctx);
+    void async_recvfrom_impl(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx);
+    void async_sendto_impl(socket_t fd, const void* buf, size_t len, const struct sockaddr* to, socklen_t tolen, std::shared_ptr<OperationContext> ctx);
+    void async_wait_readable_impl(socket_t fd, std::shared_ptr<OperationContext> ctx);
+    void async_wait_writable_impl(socket_t fd, std::shared_ptr<OperationContext> ctx);
+    void wake_impl();
 
     // io_uring ring is NOT safe for concurrent access from multiple threads.
     // Use SO_REUSEPORT model (per-thread io_context) for multi-threading.
-    bool supports_concurrent_poll() const override { return false; }
-    const char* name() const override { return "io_uring"; }
+    static constexpr bool concurrent_poll = false;
+    static constexpr const char* backend_name = "io_uring";
 
 private:
     struct PendingOp {
@@ -74,6 +74,7 @@ private:
     int ring_fd_;
     int wake_fd_ = -1;  // eventfd for cross-thread wakeup
     static constexpr __u64 WAKEUP_USER_DATA = ~static_cast<__u64>(0);
+    static constexpr __u64 TIMEOUT_USER_DATA = WAKEUP_USER_DATA - 1;
 
     // Submission queue pointers (mmap'd)
     unsigned* sq_head_;

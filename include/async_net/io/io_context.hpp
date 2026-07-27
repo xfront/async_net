@@ -14,7 +14,7 @@
 
 namespace async_net {
 
-class io_context : public executor {
+class io_context : public ExecutorBase<io_context> {
 public:
     io_context();
     explicit io_context(std::unique_ptr<IoBackend> backend);
@@ -79,7 +79,7 @@ public:
     // Post a function to be executed in the event loop. Thread-safe.
     // Automatically increments work count; the event loop will not exit
     // until this function has been executed.
-    void post(std::function<void()> func) override;
+    void post_impl(std::function<void()> func);
 
     // -----------------------------------------------------------------------
     // Timer / Schedule API

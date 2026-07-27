@@ -144,6 +144,9 @@ public:
 // TCP acceptor
 class acceptor {
 public:
+    /// The type of peer stream this acceptor produces.
+    using peer_stream_type = tcp::socket;
+
     acceptor(io_context& ctx, uint16_t port, const char* addr = "0.0.0.0", bool reuse_port = false)
         : ctx_(&ctx) {
         fd_ = ::socket(AF_INET, SOCK_STREAM, 0);

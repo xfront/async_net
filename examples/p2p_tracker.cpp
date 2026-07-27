@@ -6,13 +6,13 @@
 /// Usage: ./p2p_tracker [port]
 /// Default port: 9000
 
+#include <algorithm>
+#include <async_net/executor/schedule.hpp>
 #include <async_net/io/io_context.hpp>
 #include <async_net/p2p/tracker_server.hpp>
-#include <async_net/executor/schedule.hpp>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
-#include <algorithm>
 #include <string>
 
 using namespace async_net;
@@ -64,8 +64,7 @@ int main(int argc, char* argv[]) {
             auto peers = server.peers();
             std::fprintf(stderr, "[tracker] %zu peers online\n", peers.size());
             for (const auto& p : peers) {
-                std::fprintf(stderr, "  - %s @ %s:%d\n",
-                             p.id.c_str(), p.public_address.c_str(), p.udp_port);
+                std::fprintf(stderr, "  - %s @ %s:%d\n", p.id.c_str(), p.public_address.c_str(), p.udp_port);
             }
         }
     }();

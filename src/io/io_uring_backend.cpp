@@ -239,6 +239,12 @@ void IoUringBackend::process_cqes(std::vector<OperationContext*>& to_resume) {
         unsigned index = head & cq_mask_;
         struct io_uring_cqe* cqe = &cqes_[index];
 
+        // Skip timeout completions
+        if (cqe->user_data == TIMEOUT_USER_DATA) {
+            head++;
+            continue;
+        }
+
         // Handle wakeup eventfd completion
         if (cqe->user_data == WAKEUP_USER_DATA) {
             // Consume the eventfd data
@@ -318,14 +324,14 @@ void IoUringBackend::process_cqes(std::vector<OperationContext*>& to_resume) {
 // IoBackend interface
 // ---------------------------------------------------------------------------
 
-bool IoUringBackend::register_socket(socket_t fd) {
+bool IoUringBackend::register_impl(socket_t fd) {
     if (set_nonblocking(fd) != 0) {
         return false;
     }
     return true;
 }
 
-void IoUringBackend::deregister_socket(socket_t fd) {
+void IoUringBackend::deregister_impl(socket_t fd) {
     std::lock_guard<std::mutex> lock(mutex_);
     read_ops_.erase(fd);
     write_ops_.erase(fd);
@@ -335,7 +341,7 @@ void IoUringBackend::deregister_socket(socket_t fd) {
 // Submission and completion processing happen in poll() to avoid deadlock
 // (coroutine resumption must happen outside the mutex).
 
-void IoUringBackend::async_read(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
+void IoUringBackend::async_read_impl(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     read_ops_[fd] = PendingOp{OpType::Read, ctx, nullptr, {}, 0};
@@ -356,7 +362,7 @@ void IoUringBackend::async_read(socket_t fd, void* buf, size_t len, std::shared_
     // SQE queued — poll() will submit it
 }
 
-void IoUringBackend::async_write(socket_t fd, const void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
+void IoUringBackend::async_write_impl(socket_t fd, const void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     write_ops_[fd] = PendingOp{OpType::Write, ctx, nullptr, {}, 0};
@@ -376,7 +382,7 @@ void IoUringBackend::async_write(socket_t fd, const void* buf, size_t len, std::
     sqe->user_data = reinterpret_cast<__u64>(ctx.get());
 }
 
-void IoUringBackend::async_accept(socket_t listen_fd, socket_t* out_fd, std::shared_ptr<OperationContext> ctx) {
+void IoUringBackend::async_accept_impl(socket_t listen_fd, socket_t* out_fd, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto& op = read_ops_[listen_fd];
@@ -401,7 +407,7 @@ void IoUringBackend::async_accept(socket_t listen_fd, socket_t* out_fd, std::sha
     sqe->user_data = reinterpret_cast<__u64>(ctx.get());
 }
 
-void IoUringBackend::async_connect(socket_t fd, const struct sockaddr* addr, socklen_t addrlen, std::shared_ptr<OperationContext> ctx) {
+void IoUringBackend::async_connect_impl(socket_t fd, const struct sockaddr* addr, socklen_t addrlen, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto& op = write_ops_[fd];
@@ -425,7 +431,7 @@ void IoUringBackend::async_connect(socket_t fd, const struct sockaddr* addr, soc
     sqe->user_data = reinterpret_cast<__u64>(ctx.get());
 }
 
-void IoUringBackend::async_recvfrom(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
+void IoUringBackend::async_recvfrom_impl(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto& op = read_ops_[fd];
@@ -460,7 +466,7 @@ void IoUringBackend::async_recvfrom(socket_t fd, void* buf, size_t len, std::sha
     sqe->user_data = reinterpret_cast<__u64>(ctx.get());
 }
 
-void IoUringBackend::async_sendto(socket_t fd, const void* buf, size_t len, const struct sockaddr* to, socklen_t tolen, std::shared_ptr<OperationContext> ctx) {
+void IoUringBackend::async_sendto_impl(socket_t fd, const void* buf, size_t len, const struct sockaddr* to, socklen_t tolen, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto& op = write_ops_[fd];
@@ -502,7 +508,7 @@ void IoUringBackend::async_sendto(socket_t fd, const void* buf, size_t len, cons
     sqe->user_data = reinterpret_cast<__u64>(ctx.get());
 }
 
-void IoUringBackend::async_wait_readable(socket_t fd, std::shared_ptr<OperationContext> ctx) {
+void IoUringBackend::async_wait_readable_impl(socket_t fd, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     ctx->set_type(OpType::WaitReadable);
@@ -521,7 +527,7 @@ void IoUringBackend::async_wait_readable(socket_t fd, std::shared_ptr<OperationC
     sqe->user_data = reinterpret_cast<__u64>(ctx.get());
 }
 
-void IoUringBackend::async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) {
+void IoUringBackend::async_wait_writable_impl(socket_t fd, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     ctx->set_type(OpType::WaitWritable);
@@ -540,7 +546,7 @@ void IoUringBackend::async_wait_writable(socket_t fd, std::shared_ptr<OperationC
     sqe->user_data = reinterpret_cast<__u64>(ctx.get());
 }
 
-void IoUringBackend::poll(int timeout_ms) {
+void IoUringBackend::poll_impl(int timeout_ms) {
     std::vector<OperationContext*> to_resume;
 
     {
@@ -556,17 +562,37 @@ void IoUringBackend::poll(int timeout_ms) {
         unsigned cq_tail_val = __atomic_load_n(cq_tail_, __ATOMIC_ACQUIRE);
         bool has_cqes = (cq_head_val != cq_tail_val);
 
-        if (pending_sq > 0 && !has_cqes && timeout_ms > 0) {
-            // Submit SQEs AND wait for completions in one call
-            io_uring_enter(ring_fd_, pending_sq, 1, IORING_ENTER_GETEVENTS);
-        } else if (pending_sq > 0) {
-            // Just submit, don't wait
-            submit_sqes();
-        }
-        
-        if (!has_cqes && pending_sq == 0 && timeout_ms > 0) {
-            // No SQEs to submit, but wait for events
-            io_uring_enter(ring_fd_, 0, 1, IORING_ENTER_GETEVENTS);
+        if (!has_cqes && timeout_ms > 0) {
+            // Need to wait. Submit a timeout SQE so wait has an upper bound.
+            // This is necessary because io_uring_enter with min_complete > 0
+            // does NOT accept a timeout parameter — it blocks forever.
+            struct __kernel_timespec ts{};
+            ts.tv_sec = timeout_ms / 1000;
+            ts.tv_nsec = (timeout_ms % 1000) * 1000000LL;
+
+            struct io_uring_sqe* tsqe = get_sqe();
+            if (tsqe) {
+                tsqe->opcode = IORING_OP_TIMEOUT;
+                tsqe->fd = -1;
+                tsqe->addr = reinterpret_cast<__u64>(&ts);
+                tsqe->len = 1;
+                tsqe->off = 0;
+                tsqe->user_data = TIMEOUT_USER_DATA;
+            }
+
+            unsigned total_sq = *sq_tail_ - sq_head_val;  // re-read tail after get_sqe
+            total_sq = total_sq > 0 ? total_sq : (tsqe ? 1 : 0);
+
+            if (total_sq > 0) {
+                io_uring_enter(ring_fd_, total_sq, 1, IORING_ENTER_GETEVENTS);
+            }
+        } else {
+            // Always submit pending SQEs, even when CQEs exist.
+            // When has_cqes==true, pending_sq>0 SQEs would otherwise never
+            // be submitted until the next idle poll() cycle.
+            if (pending_sq > 0) {
+                submit_sqes();
+            }
         }
 
         // Process all available CQEs
@@ -579,7 +605,7 @@ void IoUringBackend::poll(int timeout_ms) {
     }
 }
 
-void IoUringBackend::wake() {
+void IoUringBackend::wake_impl() {
     if (wake_fd_ >= 0) {
         uint64_t val = 1;
         auto r = ::write(wake_fd_, &val, sizeof(val));

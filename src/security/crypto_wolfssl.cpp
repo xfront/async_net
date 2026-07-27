@@ -1,4 +1,4 @@
-// wolfSSL crypto backend implementation
+// wolfSSL crypto backend policy — replaces free functions with WolfSslCryptoPolicy static methods
 
 #include "crypto_backend.hpp"
 
@@ -10,14 +10,18 @@
 #include <wolfssl/wolfcrypt/random.h>
 #include <wolfssl/wolfcrypt/error-crypt.h>
 
-namespace async_net::crypto::backend {
+namespace async_net::crypto {
 
-void init() {
+// ============================================================================
+// WolfSslCryptoPolicy — static methods wrapping wolfSSL crypto API
+// ============================================================================
+
+void WolfSslCryptoPolicy::init() {
     static bool done = false;
     if (!done) { wolfSSL_Init(); done = true; }
 }
 
-std::vector<uint8_t> aes_gcm_encrypt(
+std::vector<uint8_t> WolfSslCryptoPolicy::aes_gcm_encrypt(
     const uint8_t* key, size_t key_len,
     const uint8_t* iv, size_t iv_len,
     const uint8_t* plaintext, size_t len,
@@ -45,7 +49,7 @@ std::vector<uint8_t> aes_gcm_encrypt(
     return out;
 }
 
-std::optional<std::vector<uint8_t>> aes_gcm_decrypt(
+std::optional<std::vector<uint8_t>> WolfSslCryptoPolicy::aes_gcm_decrypt(
     const uint8_t* key, size_t key_len,
     const uint8_t* iv, size_t iv_len,
     const uint8_t* ciphertext, size_t len,
@@ -77,7 +81,7 @@ std::optional<std::vector<uint8_t>> aes_gcm_decrypt(
     return out;
 }
 
-std::vector<uint8_t> random_bytes(size_t len) {
+std::vector<uint8_t> WolfSslCryptoPolicy::random_bytes(size_t len) {
     std::vector<uint8_t> buf(len);
     WC_RNG rng;
     if (wc_InitRng(&rng) != 0) return {};
@@ -86,6 +90,6 @@ std::vector<uint8_t> random_bytes(size_t len) {
     return buf;
 }
 
-} // namespace async_net::crypto::backend
+} // namespace async_net::crypto
 
 #endif // ASYNC_NET_SSL_WOLFSSL

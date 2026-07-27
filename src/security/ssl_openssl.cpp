@@ -1,4 +1,5 @@
-// OpenSSL-compatible SSL backend implementation (AWS-LC / LibreSSL)
+// OpenSSL-compatible SSL backend policy (AWS-LC / LibreSSL)
+// Replaces free functions with OpenSslPolicy static methods.
 
 #include "ssl_backend.hpp"
 
@@ -10,14 +11,18 @@
 #include <cstdio>
 #include <cstring>
 
-namespace async_net::ssl::backend {
+namespace async_net::ssl {
 
-void init() {
+// ============================================================================
+// OpenSslPolicy — static methods wrapping OpenSSL-compatible API
+// ============================================================================
+
+void OpenSslPolicy::init() {
     static bool done = false;
     if (!done) { OPENSSL_init_ssl(0, nullptr); done = true; }
 }
 
-void drain_errors(const char* prefix) {
+void OpenSslPolicy::drain_errors(const char* prefix) {
     unsigned long sslerr;
     char errbuf[256];
     while ((sslerr = ERR_get_error()) != 0) {
@@ -27,7 +32,7 @@ void drain_errors(const char* prefix) {
     std::fflush(stderr);
 }
 
-static const SSL_METHOD* get_method(const std::string& mstr) {
+static const SSL_METHOD* ossl_method(const std::string& mstr) {
     if (mstr == "tls_server")  return TLS_server_method();
     if (mstr == "tls_client")  return TLS_client_method();
     if (mstr == "dtls_server") return DTLS_server_method();
@@ -36,42 +41,42 @@ static const SSL_METHOD* get_method(const std::string& mstr) {
     return TLS_method();
 }
 
-void* ctx_new(const char* method) {
-    return SSL_CTX_new(get_method(method));
+OpenSslPolicy::ctx_type* OpenSslPolicy::ctx_new(const char* method) {
+    return SSL_CTX_new(ossl_method(method));
 }
 
-void ctx_free(void* ctx) {
-    SSL_CTX_free(static_cast<SSL_CTX*>(ctx));
+void OpenSslPolicy::ctx_free(ctx_type* ctx) {
+    SSL_CTX_free(ctx);
 }
 
-bool ctx_use_cert(void* ctx, const char* path) {
-    return SSL_CTX_use_certificate_chain_file(static_cast<SSL_CTX*>(ctx), path) == 1;
+bool OpenSslPolicy::ctx_use_cert(ctx_type* ctx, const char* path) {
+    return SSL_CTX_use_certificate_chain_file(ctx, path) == 1;
 }
 
-bool ctx_use_key(void* ctx, const char* path) {
-    return SSL_CTX_use_PrivateKey_file(static_cast<SSL_CTX*>(ctx), path, SSL_FILETYPE_PEM) == 1;
+bool OpenSslPolicy::ctx_use_key(ctx_type* ctx, const char* path) {
+    return SSL_CTX_use_PrivateKey_file(ctx, path, SSL_FILETYPE_PEM) == 1;
 }
 
-bool ctx_load_verify(void* ctx, const char* path) {
-    return SSL_CTX_load_verify_locations(static_cast<SSL_CTX*>(ctx), path, nullptr) == 1;
+bool OpenSslPolicy::ctx_load_verify(ctx_type* ctx, const char* path) {
+    return SSL_CTX_load_verify_locations(ctx, path, nullptr) == 1;
 }
 
-void ctx_set_cipher_list(void* ctx, const char* ciphers) {
-    SSL_CTX_set_cipher_list(static_cast<SSL_CTX*>(ctx), ciphers);
+void OpenSslPolicy::ctx_set_cipher_list(ctx_type* ctx, const char* ciphers) {
+    SSL_CTX_set_cipher_list(ctx, ciphers);
 }
 
-void ctx_set_verify(void* ctx, bool verify) {
-    SSL_CTX_set_verify(static_cast<SSL_CTX*>(ctx),
+void OpenSslPolicy::ctx_set_verify(ctx_type* ctx, bool verify) {
+    SSL_CTX_set_verify(ctx,
         verify ? SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT : SSL_VERIFY_NONE,
         nullptr);
 }
 
-void ctx_set_alpn_protos(void* ctx, const unsigned char* wire, unsigned int len) {
-    SSL_CTX_set_alpn_protos(static_cast<SSL_CTX*>(ctx), wire, len);
+void OpenSslPolicy::ctx_set_alpn_protos(ctx_type* ctx, const unsigned char* wire, unsigned int len) {
+    SSL_CTX_set_alpn_protos(ctx, wire, len);
 }
 
-static int alpn_select_cb(SSL* /*ssl*/, const unsigned char** out, unsigned char* outlen,
-                           const unsigned char* in, unsigned int inlen, void* arg) {
+static int ossl_alpn_select_cb(SSL* /*ssl*/, const unsigned char** out, unsigned char* outlen,
+                                const unsigned char* in, unsigned int inlen, void* arg) {
     auto* user_cb = static_cast<std::function<std::string(const std::vector<std::string>&)>*>(arg);
     if (!user_cb) return 1;
 
@@ -102,64 +107,64 @@ static int alpn_select_cb(SSL* /*ssl*/, const unsigned char** out, unsigned char
     return 1;
 }
 
-void ctx_set_alpn_select_cb(void* ctx,
+void OpenSslPolicy::ctx_set_alpn_select_cb(ctx_type* ctx,
     std::function<std::string(const std::vector<std::string>&)>* user_cb) {
-    SSL_CTX_set_alpn_select_cb(static_cast<SSL_CTX*>(ctx), alpn_select_cb, user_cb);
+    SSL_CTX_set_alpn_select_cb(ctx, ossl_alpn_select_cb, user_cb);
 }
 
-void* stream_new(void* ctx, int fd) {
-    auto* s = SSL_new(static_cast<SSL_CTX*>(ctx));
-    if (s) SSL_set_fd(static_cast<SSL*>(s), fd);
+OpenSslPolicy::ssl_type* OpenSslPolicy::stream_new(ctx_type* ctx, int fd) {
+    auto* s = SSL_new(ctx);
+    if (s) SSL_set_fd(const_cast<SSL*>(s), fd);  // SSL_set_fd takes SSL* not const
     return s;
 }
 
-void stream_free(void* ssl) {
-    SSL_free(static_cast<SSL*>(ssl));
+void OpenSslPolicy::stream_free(ssl_type* ssl) {
+    SSL_free(ssl);
 }
 
-void stream_set_accept_state(void* ssl) {
-    SSL_set_accept_state(static_cast<SSL*>(ssl));
+void OpenSslPolicy::stream_set_accept_state(ssl_type* ssl) {
+    SSL_set_accept_state(ssl);
 }
 
-void stream_set_connect_state(void* ssl) {
-    SSL_set_connect_state(static_cast<SSL*>(ssl));
+void OpenSslPolicy::stream_set_connect_state(ssl_type* ssl) {
+    SSL_set_connect_state(ssl);
 }
 
-int stream_do_handshake(void* ssl) {
-    return SSL_do_handshake(static_cast<SSL*>(ssl));
+int OpenSslPolicy::stream_do_handshake(ssl_type* ssl) {
+    return SSL_do_handshake(ssl);
 }
 
-int stream_read(void* ssl, void* buf, int len) {
-    return SSL_read(static_cast<SSL*>(ssl), buf, len);
+int OpenSslPolicy::stream_read(ssl_type* ssl, void* buf, int len) {
+    return SSL_read(ssl, buf, len);
 }
 
-int stream_write(void* ssl, const void* buf, int len) {
-    return SSL_write(static_cast<SSL*>(ssl), buf, len);
+int OpenSslPolicy::stream_write(ssl_type* ssl, const void* buf, int len) {
+    return SSL_write(ssl, buf, len);
 }
 
-int stream_shutdown(void* ssl) {
-    return SSL_shutdown(static_cast<SSL*>(ssl));
+int OpenSslPolicy::stream_shutdown(ssl_type* ssl) {
+    return SSL_shutdown(ssl);
 }
 
-int stream_get_error(void* ssl, int ret) {
-    int err = SSL_get_error(static_cast<SSL*>(ssl), ret);
+int OpenSslPolicy::stream_get_error(ssl_type* ssl, int ret) {
+    int err = SSL_get_error(ssl, ret);
     if (err == SSL_ERROR_NONE)        return ERR_NONE;
     if (err == SSL_ERROR_WANT_READ)   return ERR_WANT_READ;
     if (err == SSL_ERROR_WANT_WRITE)  return ERR_WANT_WRITE;
     if (err == SSL_ERROR_ZERO_RETURN) return ERR_ZERO_RETURN;
-    return err; // other error
+    return err;
 }
 
-std::string stream_alpn_selected(void* ssl) {
+std::string OpenSslPolicy::stream_alpn_selected(ssl_type* ssl) {
     const unsigned char* proto = nullptr;
     unsigned int len = 0;
-    SSL_get0_alpn_selected(static_cast<SSL*>(ssl), &proto, &len);
+    SSL_get0_alpn_selected(ssl, &proto, &len);
     if (proto && len > 0) {
         return std::string(reinterpret_cast<const char*>(proto), len);
     }
     return {};
 }
 
-} // namespace async_net::ssl::backend
+} // namespace async_net::ssl
 
 #endif // ASYNC_NET_SSL_AWSLC || ASYNC_NET_SSL_LIBRESSL

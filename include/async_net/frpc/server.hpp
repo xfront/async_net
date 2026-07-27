@@ -3,15 +3,15 @@
 // Uses FlatBuffers serialization instead of Protocol Buffers.
 #pragma once
 
+#include <async_net/coroutine/task.hpp>
 #include <async_net/frpc/types.hpp>
 #include <async_net/grpc/interceptor.hpp>
-#include <async_net/coroutine/task.hpp>
 #include <async_net/io/io_context.hpp>
 #include <async_net/io/tcp.hpp>
 #include <functional>
-#include <string>
 #include <map>
 #include <memory>
+#include <string>
 
 #ifdef ASYNC_NET_HAS_SSL
 #include <async_net/io/ssl.hpp>
@@ -34,7 +34,8 @@ using method_handler_with_context = std::function<Task<std::string>(const std::s
 using server_stream_handler = std::function<Task<void>(const std::string& request, writer& w)>;
 
 // Server streaming with context
-using server_stream_handler_with_context = std::function<Task<void>(const std::string& request, writer& w, call_context&)>;
+using server_stream_handler_with_context =
+    std::function<Task<void>(const std::string& request, writer& w, call_context&)>;
 
 // Client streaming: multiple requests via reader -> response
 using client_stream_handler = std::function<Task<std::string>(reader& r)>;
@@ -61,11 +62,14 @@ public:
     void register_method(const std::string& service, const std::string& method, method_handler handler);
     void register_method(const std::string& service, const std::string& method, method_handler_with_context handler);
     void register_server_stream(const std::string& service, const std::string& method, server_stream_handler handler);
-    void register_server_stream(const std::string& service, const std::string& method, server_stream_handler_with_context handler);
+    void register_server_stream(const std::string& service, const std::string& method,
+                                server_stream_handler_with_context handler);
     void register_client_stream(const std::string& service, const std::string& method, client_stream_handler handler);
-    void register_client_stream(const std::string& service, const std::string& method, client_stream_handler_with_context handler);
+    void register_client_stream(const std::string& service, const std::string& method,
+                                client_stream_handler_with_context handler);
     void register_bidi_stream(const std::string& service, const std::string& method, bidi_stream_handler handler);
-    void register_bidi_stream(const std::string& service, const std::string& method, bidi_stream_handler_with_context handler);
+    void register_bidi_stream(const std::string& service, const std::string& method,
+                              bidi_stream_handler_with_context handler);
 
     // Add a server interceptor
     void add_interceptor(grpc::interceptor_fn interceptor);
@@ -116,4 +120,4 @@ private:
     Task<std::pair<status, std::string>> dispatch(const std::string& path, const std::string& data, call_context& ctx);
 };
 
-} // namespace async_net::frpc
+}  // namespace async_net::frpc

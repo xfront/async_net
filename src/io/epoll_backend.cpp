@@ -42,7 +42,7 @@ EpollBackend::~EpollBackend() {
     }
 }
 
-bool EpollBackend::register_socket(socket_t fd) {
+bool EpollBackend::register_impl(socket_t fd) {
     if (set_nonblocking(fd) != 0) {
         return false;
     }
@@ -59,7 +59,7 @@ bool EpollBackend::register_socket(socket_t fd) {
     return true;
 }
 
-void EpollBackend::deregister_socket(socket_t fd) {
+void EpollBackend::deregister_impl(socket_t fd) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
@@ -68,7 +68,7 @@ void EpollBackend::deregister_socket(socket_t fd) {
     fd_events_.erase(fd);
 }
 
-void EpollBackend::async_read(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
+void EpollBackend::async_read_impl(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     read_ops_[fd] = PendingOp{OpType::Read, buf, len, nullptr, ctx, {}, 0};
@@ -79,7 +79,7 @@ void EpollBackend::async_read(socket_t fd, void* buf, size_t len, std::shared_pt
     try_complete_read(fd);
 }
 
-void EpollBackend::async_write(socket_t fd, const void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
+void EpollBackend::async_write_impl(socket_t fd, const void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     write_ops_[fd] = PendingOp{OpType::Write, const_cast<void*>(buf), len, nullptr, ctx, {}, 0};
@@ -90,7 +90,7 @@ void EpollBackend::async_write(socket_t fd, const void* buf, size_t len, std::sh
     try_complete_write(fd);
 }
 
-void EpollBackend::async_accept(socket_t listen_fd, socket_t* out_fd, std::shared_ptr<OperationContext> ctx) {
+void EpollBackend::async_accept_impl(socket_t listen_fd, socket_t* out_fd, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     read_ops_[listen_fd] = PendingOp{OpType::Accept, nullptr, 0, out_fd, ctx, {}, 0};
@@ -111,7 +111,7 @@ void EpollBackend::async_accept(socket_t listen_fd, socket_t* out_fd, std::share
     }
 }
 
-void EpollBackend::async_connect(socket_t fd, const struct sockaddr* addr, socklen_t addrlen, std::shared_ptr<OperationContext> ctx) {
+void EpollBackend::async_connect_impl(socket_t fd, const struct sockaddr* addr, socklen_t addrlen, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     int ret = ::connect(fd, addr, addrlen);
@@ -130,7 +130,7 @@ void EpollBackend::async_connect(socket_t fd, const struct sockaddr* addr, sockl
     update_events(fd, EPOLLOUT);
 }
 
-void EpollBackend::async_recvfrom(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
+void EpollBackend::async_recvfrom_impl(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     read_ops_[fd] = PendingOp{OpType::RecvFrom, buf, len, nullptr, ctx, {}, 0};
@@ -141,7 +141,7 @@ void EpollBackend::async_recvfrom(socket_t fd, void* buf, size_t len, std::share
     try_complete_read(fd);
 }
 
-void EpollBackend::async_sendto(socket_t fd, const void* buf, size_t len, const struct sockaddr* to, socklen_t tolen, std::shared_ptr<OperationContext> ctx) {
+void EpollBackend::async_sendto_impl(socket_t fd, const void* buf, size_t len, const struct sockaddr* to, socklen_t tolen, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     PendingOp op{OpType::SendTo, const_cast<void*>(buf), len, nullptr, ctx, {}, 0};
@@ -157,7 +157,7 @@ void EpollBackend::async_sendto(socket_t fd, const void* buf, size_t len, const 
     try_complete_write(fd);
 }
 
-void EpollBackend::async_wait_readable(socket_t fd, std::shared_ptr<OperationContext> ctx) {
+void EpollBackend::async_wait_readable_impl(socket_t fd, std::shared_ptr<OperationContext> ctx) {
     if (tl_in_poll_) {
         // Called from a coroutine that resumed synchronously inside poll()
         // (while the mutex is held). Defer to avoid deadlock.
@@ -170,7 +170,7 @@ void EpollBackend::async_wait_readable(socket_t fd, std::shared_ptr<OperationCon
     update_events(fd, EPOLLIN);
 }
 
-void EpollBackend::async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) {
+void EpollBackend::async_wait_writable_impl(socket_t fd, std::shared_ptr<OperationContext> ctx) {
     if (tl_in_poll_) {
         tl_deferred_waits_.push_back({fd, std::move(ctx), false});
         return;
@@ -197,7 +197,7 @@ void EpollBackend::process_deferred_waits() {
     tl_deferred_waits_.clear();
 }
 
-void EpollBackend::poll(int timeout_ms) {
+void EpollBackend::poll_impl(int timeout_ms) {
     // Local events array — each thread calling poll() gets its own copy on the stack.
     // This makes concurrent poll() calls from multiple threads safe.
     struct epoll_event events[MAX_EVENTS];
@@ -361,7 +361,7 @@ void EpollBackend::poll(int timeout_ms) {
     tl_in_poll_ = false;
 }
 
-void EpollBackend::wake() {
+void EpollBackend::wake_impl() {
     if (wake_fd_ >= 0) {
         uint64_t val = 1;
         auto r = ::write(wake_fd_, &val, sizeof(val));

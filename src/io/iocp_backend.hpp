@@ -10,7 +10,7 @@
 
 namespace async_net {
 
-class IocpBackend : public IoBackend {
+class IocpBackend : public IoBackendBase<IocpBackend> {
 public:
     IocpBackend();
     ~IocpBackend() override;
@@ -18,23 +18,23 @@ public:
     IocpBackend(const IocpBackend&) = delete;
     IocpBackend& operator=(const IocpBackend&) = delete;
 
-    void poll(int timeout_ms) override;
-    bool register_socket(socket_t fd) override;
-    void deregister_socket(socket_t fd) override;
-    void async_read(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) override;
-    void async_write(socket_t fd, const void* buf, size_t len, std::shared_ptr<OperationContext> ctx) override;
-    void async_accept(socket_t listen_fd, socket_t* out_fd, std::shared_ptr<OperationContext> ctx) override;
-    void async_connect(socket_t fd, const struct sockaddr* addr, socklen_t addrlen, std::shared_ptr<OperationContext> ctx) override;
-    void async_recvfrom(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) override;
-    void async_sendto(socket_t fd, const void* buf, size_t len, const struct sockaddr* to, socklen_t tolen, std::shared_ptr<OperationContext> ctx) override;
-    void async_wait_readable(socket_t fd, std::shared_ptr<OperationContext> ctx) override;
-    void async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) override;
-    void wake() override;
+    void poll_impl(int timeout_ms);
+    bool register_impl(socket_t fd);
+    void deregister_impl(socket_t fd);
+    void async_read_impl(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx);
+    void async_write_impl(socket_t fd, const void* buf, size_t len, std::shared_ptr<OperationContext> ctx);
+    void async_accept_impl(socket_t listen_fd, socket_t* out_fd, std::shared_ptr<OperationContext> ctx);
+    void async_connect_impl(socket_t fd, const struct sockaddr* addr, socklen_t addrlen, std::shared_ptr<OperationContext> ctx);
+    void async_recvfrom_impl(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx);
+    void async_sendto_impl(socket_t fd, const void* buf, size_t len, const struct sockaddr* to, socklen_t tolen, std::shared_ptr<OperationContext> ctx);
+    void async_wait_readable_impl(socket_t fd, std::shared_ptr<OperationContext> ctx);
+    void async_wait_writable_impl(socket_t fd, std::shared_ptr<OperationContext> ctx);
+    void wake_impl();
 
     // IOCP is designed for multi-threaded use: multiple threads calling
     // GetQueuedCompletionStatus on the same IOCP handle each get distinct completions.
-    bool supports_concurrent_poll() const override { return true; }
-    const char* name() const override { return "iocp"; }
+    static constexpr bool concurrent_poll = true;
+    static constexpr const char* backend_name = "iocp";
 
 private:
     // Overlapped operation structure

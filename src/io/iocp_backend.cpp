@@ -47,7 +47,7 @@ IocpBackend::~IocpBackend() {
     }
 }
 
-bool IocpBackend::register_socket(socket_t fd) {
+bool IocpBackend::register_impl(socket_t fd) {
     if (set_nonblocking(fd) != 0) {
         return false;
     }
@@ -62,14 +62,14 @@ bool IocpBackend::register_socket(socket_t fd) {
     return result != nullptr;
 }
 
-void IocpBackend::deregister_socket(socket_t fd) {
+void IocpBackend::deregister_impl(socket_t fd) {
     std::lock_guard<std::mutex> lock(mutex_);
     pending_ops_.erase(fd);
     // Note: On Windows, we can't explicitly deregister from IOCP
     // The socket will be cleaned up when closed
 }
 
-void IocpBackend::async_read(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
+void IocpBackend::async_read_impl(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto op = std::make_unique<OverlappedOp>();
@@ -94,7 +94,7 @@ void IocpBackend::async_read(socket_t fd, void* buf, size_t len, std::shared_ptr
     pending_ops_[fd].push_back(std::move(op));
 }
 
-void IocpBackend::async_write(socket_t fd, const void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
+void IocpBackend::async_write_impl(socket_t fd, const void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto op = std::make_unique<OverlappedOp>();
@@ -118,7 +118,7 @@ void IocpBackend::async_write(socket_t fd, const void* buf, size_t len, std::sha
     pending_ops_[fd].push_back(std::move(op));
 }
 
-void IocpBackend::async_accept(socket_t listen_fd, socket_t* out_fd, std::shared_ptr<OperationContext> ctx) {
+void IocpBackend::async_accept_impl(socket_t listen_fd, socket_t* out_fd, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto op = std::make_unique<OverlappedOp>();
@@ -160,7 +160,7 @@ void IocpBackend::async_accept(socket_t listen_fd, socket_t* out_fd, std::shared
     pending_ops_[listen_fd].push_back(std::move(op));
 }
 
-void IocpBackend::async_connect(socket_t fd, const struct sockaddr* addr, socklen_t addrlen, std::shared_ptr<OperationContext> ctx) {
+void IocpBackend::async_connect_impl(socket_t fd, const struct sockaddr* addr, socklen_t addrlen, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto op = std::make_unique<OverlappedOp>();
@@ -195,7 +195,7 @@ void IocpBackend::async_connect(socket_t fd, const struct sockaddr* addr, sockle
     pending_ops_[fd].push_back(std::move(op));
 }
 
-void IocpBackend::async_recvfrom(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
+void IocpBackend::async_recvfrom_impl(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto op = std::make_unique<OverlappedOp>();
@@ -222,7 +222,7 @@ void IocpBackend::async_recvfrom(socket_t fd, void* buf, size_t len, std::shared
     pending_ops_[fd].push_back(std::move(op));
 }
 
-void IocpBackend::async_sendto(socket_t fd, const void* buf, size_t len, const struct sockaddr* to, socklen_t tolen, std::shared_ptr<OperationContext> ctx) {
+void IocpBackend::async_sendto_impl(socket_t fd, const void* buf, size_t len, const struct sockaddr* to, socklen_t tolen, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     auto op = std::make_unique<OverlappedOp>();
@@ -249,7 +249,7 @@ void IocpBackend::async_sendto(socket_t fd, const void* buf, size_t len, const s
     pending_ops_[fd].push_back(std::move(op));
 }
 
-void IocpBackend::async_wait_readable(socket_t fd, std::shared_ptr<OperationContext> ctx) {
+void IocpBackend::async_wait_readable_impl(socket_t fd, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Use zero-byte overlapped WSARecv with MSG_PEEK to detect readability
@@ -275,14 +275,14 @@ void IocpBackend::async_wait_readable(socket_t fd, std::shared_ptr<OperationCont
     pending_ops_[fd].push_back(std::move(op));
 }
 
-void IocpBackend::async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) {
+void IocpBackend::async_wait_writable_impl(socket_t fd, std::shared_ptr<OperationContext> ctx) {
     // For IOCP, complete immediately.
     // Sockets are almost always writable; if SSL_write returns WANT_WRITE again,
     // the coroutine will re-wait and retry.
     ctx->complete(0, 0);
 }
 
-void IocpBackend::poll(int timeout_ms) {
+void IocpBackend::poll_impl(int timeout_ms) {
     DWORD bytes_transferred = 0;
     ULONG_PTR completion_key = 0;
     LPOVERLAPPED overlapped = nullptr;
@@ -363,7 +363,7 @@ void IocpBackend::poll(int timeout_ms) {
     }
 }
 
-void IocpBackend::wake() {
+void IocpBackend::wake_impl() {
     if (iocp_handle_ != nullptr) {
         PostQueuedCompletionStatus(
             iocp_handle_,

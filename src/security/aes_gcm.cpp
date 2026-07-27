@@ -17,8 +17,8 @@ std::vector<uint8_t> aes_gcm::encrypt(
     const uint8_t* aad, size_t aad_len)
 {
     if (key_len != KEY_LEN || iv_len != IV_LEN) return {};
-    backend::init();
-    return backend::aes_gcm_encrypt(key, key_len, iv, iv_len, plaintext, len, aad, aad_len);
+    default_crypto_policy::init();
+    return default_crypto_policy::aes_gcm_encrypt(key, key_len, iv, iv_len, plaintext, len, aad, aad_len);
 }
 
 // ---------------------------------------------------------------------------
@@ -33,8 +33,8 @@ std::optional<std::vector<uint8_t>> aes_gcm::decrypt(
 {
     if (key_len != KEY_LEN || iv_len != IV_LEN) return std::nullopt;
     if (len < TAG_LEN) return std::nullopt;
-    backend::init();
-    return backend::aes_gcm_decrypt(key, key_len, iv, iv_len, ciphertext, len, aad, aad_len);
+    default_crypto_policy::init();
+    return default_crypto_policy::aes_gcm_decrypt(key, key_len, iv, iv_len, ciphertext, len, aad, aad_len);
 }
 
 // ---------------------------------------------------------------------------
@@ -42,8 +42,8 @@ std::optional<std::vector<uint8_t>> aes_gcm::decrypt(
 // ---------------------------------------------------------------------------
 
 std::vector<uint8_t> aes_gcm::random_bytes(size_t len) {
-    backend::init();
-    return backend::random_bytes(len);
+    default_crypto_policy::init();
+    return default_crypto_policy::random_bytes(len);
 }
 
 } // namespace async_net::crypto

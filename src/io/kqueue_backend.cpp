@@ -30,14 +30,14 @@ KqueueBackend::~KqueueBackend() {
     }
 }
 
-bool KqueueBackend::register_socket(socket_t fd) {
+bool KqueueBackend::register_impl(socket_t fd) {
     if (set_nonblocking(fd) != 0) {
         return false;
     }
     return true;
 }
 
-void KqueueBackend::deregister_socket(socket_t fd) {
+void KqueueBackend::deregister_impl(socket_t fd) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Remove events
@@ -50,7 +50,7 @@ void KqueueBackend::deregister_socket(socket_t fd) {
     write_ops_.erase(fd);
 }
 
-void KqueueBackend::async_read(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
+void KqueueBackend::async_read_impl(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     read_ops_[fd] = PendingOp{OpType::Read, buf, len, nullptr, ctx, {}, 0};
@@ -58,7 +58,7 @@ void KqueueBackend::async_read(socket_t fd, void* buf, size_t len, std::shared_p
     register_event(fd, EVFILT_READ);
 }
 
-void KqueueBackend::async_write(socket_t fd, const void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
+void KqueueBackend::async_write_impl(socket_t fd, const void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     write_ops_[fd] = PendingOp{OpType::Write, const_cast<void*>(buf), len, nullptr, ctx, {}, 0};
@@ -66,7 +66,7 @@ void KqueueBackend::async_write(socket_t fd, const void* buf, size_t len, std::s
     register_event(fd, EVFILT_WRITE);
 }
 
-void KqueueBackend::async_accept(socket_t listen_fd, socket_t* out_fd, std::shared_ptr<OperationContext> ctx) {
+void KqueueBackend::async_accept_impl(socket_t listen_fd, socket_t* out_fd, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     read_ops_[listen_fd] = PendingOp{OpType::Accept, nullptr, 0, out_fd, ctx, {}, 0};
@@ -74,7 +74,7 @@ void KqueueBackend::async_accept(socket_t listen_fd, socket_t* out_fd, std::shar
     register_event(listen_fd, EVFILT_READ);
 }
 
-void KqueueBackend::async_connect(socket_t fd, const struct sockaddr* addr, socklen_t addrlen, std::shared_ptr<OperationContext> ctx) {
+void KqueueBackend::async_connect_impl(socket_t fd, const struct sockaddr* addr, socklen_t addrlen, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     int ret = ::connect(fd, addr, addrlen);
@@ -92,7 +92,7 @@ void KqueueBackend::async_connect(socket_t fd, const struct sockaddr* addr, sock
     register_event(fd, EVFILT_WRITE);
 }
 
-void KqueueBackend::async_recvfrom(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
+void KqueueBackend::async_recvfrom_impl(socket_t fd, void* buf, size_t len, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     read_ops_[fd] = PendingOp{OpType::RecvFrom, buf, len, nullptr, ctx, {}, 0};
@@ -100,7 +100,7 @@ void KqueueBackend::async_recvfrom(socket_t fd, void* buf, size_t len, std::shar
     register_event(fd, EVFILT_READ);
 }
 
-void KqueueBackend::async_sendto(socket_t fd, const void* buf, size_t len, const struct sockaddr* to, socklen_t tolen, std::shared_ptr<OperationContext> ctx) {
+void KqueueBackend::async_sendto_impl(socket_t fd, const void* buf, size_t len, const struct sockaddr* to, socklen_t tolen, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     PendingOp op{OpType::SendTo, const_cast<void*>(buf), len, nullptr, ctx, {}, 0};
@@ -111,7 +111,7 @@ void KqueueBackend::async_sendto(socket_t fd, const void* buf, size_t len, const
     register_event(fd, EVFILT_WRITE);
 }
 
-void KqueueBackend::async_wait_readable(socket_t fd, std::shared_ptr<OperationContext> ctx) {
+void KqueueBackend::async_wait_readable_impl(socket_t fd, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     ctx->set_type(OpType::WaitReadable);
@@ -119,7 +119,7 @@ void KqueueBackend::async_wait_readable(socket_t fd, std::shared_ptr<OperationCo
     register_event(fd, EVFILT_READ);
 }
 
-void KqueueBackend::async_wait_writable(socket_t fd, std::shared_ptr<OperationContext> ctx) {
+void KqueueBackend::async_wait_writable_impl(socket_t fd, std::shared_ptr<OperationContext> ctx) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     ctx->set_type(OpType::WaitWritable);
@@ -127,7 +127,7 @@ void KqueueBackend::async_wait_writable(socket_t fd, std::shared_ptr<OperationCo
     register_event(fd, EVFILT_WRITE);
 }
 
-void KqueueBackend::poll(int timeout_ms) {
+void KqueueBackend::poll_impl(int timeout_ms) {
     struct timespec ts;
     struct timespec* ts_ptr = nullptr;
 
@@ -300,7 +300,7 @@ void KqueueBackend::try_complete_sendto(socket_t fd, std::vector<OperationContex
     }
 }
 
-void KqueueBackend::wake() {
+void KqueueBackend::wake_impl() {
     struct kevent ev;
     EV_SET(&ev, WAKEUP_IDENT, EVFILT_USER, 0, NOTE_TRIGGER, 0, nullptr);
     kevent(kqueue_fd_, &ev, 1, nullptr, 0, nullptr);

@@ -651,7 +651,14 @@ Task<response> client::send_h3(const std::string& host, uint16_t port, request r
     {
         auto h3 = std::make_unique<h3_conn>();
         h3->sock = std::make_unique<udp::socket>(ctx_);
-        h3->remote_ep = udp::endpoint(port, host.c_str());
+
+        // Properly resolve hostname to IP ("localhost" → "127.0.0.1")
+        auto resolved_ep = co_await h3->sock->async_resolve(host.c_str(), port);
+        if (resolved_ep.port() == 0) {
+            co_return response_make().status(status_code::internal_error())
+                .body("DNS resolution failed for " + host).build();
+        }
+        h3->remote_ep = resolved_ep;
 
         // Bind to ephemeral port so we can receive responses
         struct sockaddr_in bind_addr{};
